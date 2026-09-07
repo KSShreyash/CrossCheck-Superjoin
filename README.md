@@ -47,7 +47,7 @@ filenames so the order is reproducible.
 Tests:
 
 ```bash
-pytest            # 92 tests, no network access required
+pytest            # 96 tests, no network access required
 ```
 
 ---
