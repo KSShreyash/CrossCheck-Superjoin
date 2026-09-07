@@ -1281,6 +1281,22 @@ def test_fact_evidence_resolves_to_page_and_bbox(tmp_path):
     assert row["page_no"] == 1
     assert row["x0"] == 10 and row["y1"] == 40
 
+def test_reuploading_a_document_returns_its_original_id(tmp_path):
+    # Guards a silent corruption: INSERT OR IGNORE that ignores still leaves
+    # lastrowid pointing at the connection's previous insert, so re-uploading
+    # a PDF after ingesting another one would return the OTHER document's id
+    # and file this document's blocks and facts under it.
+    conn = connect(tmp_path / "t.sqlite"); init_schema(conn)
+    first = save_document(conn, "sha-a", "a.pdf", "A", 10)
+    again = save_document(conn, "sha-a", "a.pdf", "A", 10)
+    other = save_document(conn, "sha-b", "b.pdf", "B", 5)
+    after_other = save_document(conn, "sha-a", "a.pdf", "A", 10)
+    assert again == first
+    assert other != first
+    assert after_other == first, "re-upload resolved to the wrong document"
+    assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 2
+
+
 @pytest.mark.parametrize("first", [
     "Revenue was 81,415.38 million",                      # single line
     "Revenue from operations\nwas 81,415.38 million",      # newline inside block
@@ -1396,7 +1412,7 @@ def save_rejected(conn, doc_id: int, rejected: list[dict]) -> None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_store.py -v`
-Expected: 4 passed
+Expected: 5 passed
 
 - [ ] **Step 5: Commit**
 
@@ -2186,6 +2202,37 @@ git commit -m "Add README with setup, approach and the four demonstrated cases"
 ---
 
 ## Self-Review Notes
+
+### Second review round
+
+Three further defects found by executing the plan's code, two of them silent
+corruptions:
+
+6. **Re-uploading a document returned the wrong id.** `save_document` branched on
+   `cur.lastrowid`, but an `INSERT OR IGNORE` that ignores its row still reports the
+   connection's previous successful insert. Verified: ingesting `a.pdf`, then `b.pdf`,
+   then `a.pdf` again returned id 2 for the third call instead of 1, which would file
+   one document's blocks and facts under another. Now branches on `cur.rowcount`, with
+   a regression test.
+7. **Evidence bounding boxes merged across page breaks.** A quote straddling a page
+   boundary unioned a box at the foot of one page with one at the head of the next,
+   producing a rectangle that exists on neither, and `rows[0]` picked an arbitrary page
+   because `IN (...)` does not preserve order. Now ordered, with the box confined to
+   the page the quote starts on.
+8. **`prompts.py` was missing `import json`**, which `build_adjudicate_prompt` needs;
+   and the Task 13 interface line omitted the `a_meta`/`b_meta` arguments the
+   implementation actually takes.
+
+Also hardened: SQLite now sets `busy_timeout`, because ingest writes from a background
+thread while the UI polls for progress and the reader would otherwise fail immediately
+rather than wait.
+
+Measured and found acceptable, no change made: candidate pairing is O(n^2), which runs
+in 0.39s at the ~1,250 facts the six starter documents produce and 2.2s at 3,000. It
+degrades quadratically, so the "many PDFs in one layer" extension would need the
+blocking rewritten before it scales much further.
+
+### First review round
 
 Five defects were found by executing the plan's own code rather than reading it, and
 have been fixed above:
