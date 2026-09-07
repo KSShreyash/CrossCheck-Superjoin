@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Gaps and rejections{% endblock %}
+{% block content %}
+<h1>Gaps and rejections</h1>
+<p class="muted">
+  What the system could not read, and what it read but refused to keep. Both are
+  recorded rather than dropped, because a fact that vanishes silently is worse
+  than one that is missing loudly.
+</p>
+
+<h2>Pages with no usable text ({{ gaps|length }})</h2>
+<table>
+  <thead><tr><th>Document</th><th class="num">Page</th><th>Why</th></tr></thead>
+  <tbody>
+  {% for g in gaps %}
+    <tr><td>{{ g.filename }}</td><td class="num">{{ g.page_no }}</td><td>{{ g.reason }}</td></tr>
+  {% else %}
+    <tr><td colspan="3" class="muted">Every page yielded text.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<h2>Facts rejected as ungrounded ({{ rejected|length }})</h2>
+<p class="muted">
+  A fact is kept only if its quote is found verbatim in the window it came from.
+  These failed that check, so they were never stored as facts.
+</p>
+<table>
+  <thead><tr><th>Document</th><th>Why</th><th>What was proposed</th></tr></thead>
+  <tbody>
+  {% for r in rejected %}
+    <tr><td>{{ r.filename }}</td><td>{{ r.reason }}</td>
+        <td class="payload">{{ r.payload }}</td></tr>
+  {% else %}
+    <tr><td colspan="3" class="muted">Nothing rejected.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

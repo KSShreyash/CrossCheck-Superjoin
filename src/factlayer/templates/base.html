@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Fact Knowledge Layer{% endblock %}</title>
+  <link rel="stylesheet" href="/static/app.css">
+  {% if refresh %}<meta http-equiv="refresh" content="2">{% endif %}
+</head>
+<body>
+<header>
+  <nav>
+    <a class="brand" href="/">Fact Knowledge Layer</a>
+    <a href="/">Documents</a>
+    <a href="/facts">Facts</a>
+    <a href="/relations">Relations</a>
+    <a href="/gaps">Gaps &amp; rejections</a>
+  </nav>
+  <div class="counts">
+    <span><b>{{ stats.documents }}</b> docs</span>
+    <span><b>{{ stats.facts }}</b> facts</span>
+    <span><b>{{ stats.relations }}</b> relations</span>
+    {% if not stats.has_api_key %}<span class="warn">no API key: cached only</span>{% endif %}
+  </div>
+</header>
+<main>
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

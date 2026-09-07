@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Documents{% endblock %}
+{% block content %}
+<h1>Documents</h1>
+
+<form class="upload" method="post" action="/upload" enctype="multipart/form-data">
+  <input type="file" name="file" accept="application/pdf" required>
+  <button type="submit">Ingest PDF</button>
+  {% if not stats.has_api_key %}
+  <p class="warn">
+    No <code>GEMINI_API_KEY</code> is set. Documents already in the response cache
+    replay fine; anything new needs a key.
+  </p>
+  {% endif %}
+</form>
+
+{% if jobs %}
+<table class="jobs">
+  <thead><tr><th>Job</th><th>Stage</th><th class="num">Windows</th>
+             <th class="num">Facts</th><th>Error</th></tr></thead>
+  <tbody>
+  {% for j in jobs %}
+    <tr>
+      <td><code>{{ j.id[:8] }}</code></td>
+      <td>{{ j.stage }}</td>
+      <td class="num">{{ j.done }}{% if j.total %} / {{ j.total }}{% endif %}</td>
+      <td class="num">{{ j.facts }}</td>
+      <td class="warn">{{ j.error or '' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+<table>
+  <thead>
+    <tr><th>Document</th><th>Pages</th><th>Facts</th><th>Gaps</th><th>Rejected</th></tr>
+  </thead>
+  <tbody>
+  {% for d in documents %}
+    <tr>
+      <td><a href="/facts?doc={{ d.id }}">{{ d.filename }}</a></td>
+      <td class="num">{{ d.page_count }}</td>
+      <td class="num">{{ d.fact_count }}</td>
+      <td class="num">{{ d.gap_count }}</td>
+      <td class="num">{{ d.rejected_count }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">Nothing ingested yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+{% if stats.facts %}
+<p class="muted">
+  {{ stats.grounded_facts }} of {{ stats.facts }} facts resolve to a page in their
+  source. {{ stats.with_period }} carry a parseable period; the rest can corroborate
+  but can never be called contradictory.
+</p>
+{% endif %}
+{% endblock %}
