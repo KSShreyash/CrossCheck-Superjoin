@@ -279,6 +279,9 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # background ingest writes while the UI polls; without this the reader
+    # raises "database is locked" instead of waiting for the writer
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -1109,6 +1112,8 @@ Expected: FAIL, modules missing
 - [ ] **Step 3: Implement prompts.py (extraction prompt)**
 
 ```python
+import json
+
 EXTRACTION_PROMPT_VERSION = "extract-v1"
 
 EXTRACTION_PROMPT = """You extract checkable facts from an excerpt of a document.
@@ -1310,7 +1315,11 @@ def save_document(conn, sha, filename, title, pages) -> int:
         "INSERT OR IGNORE INTO documents(sha256, filename, title, page_count) "
         "VALUES (?,?,?,?)", (sha, filename, title, pages))
     conn.commit()
-    if cur.lastrowid:
+    # rowcount is 1 when the row was inserted and 0 when it was ignored.
+    # Do NOT branch on lastrowid: when the insert is ignored it still reports
+    # the connection's previous successful insert, so re-uploading a document
+    # would return some other document's id and attach facts to the wrong file.
+    if cur.rowcount:
         return cur.lastrowid
     return conn.execute("SELECT id FROM documents WHERE sha256=?", (sha,)).fetchone()["id"]
 
@@ -1353,12 +1362,17 @@ def save_fact(conn, fact: Fact, window: Window, block_row_ids: list[int]) -> int
                if window.block_ids[p] < len(block_row_ids)]
     page_no, bbox = None, (None, None, None, None)
     if row_ids:
+        # ORDER BY id because IN (...) does not preserve the order given.
         rows = conn.execute(
-            f"SELECT page_no,x0,y0,x1,y1 FROM blocks WHERE id IN "
-            f"({','.join('?' * len(row_ids))})", row_ids).fetchall()
+            f"SELECT id,page_no,x0,y0,x1,y1 FROM blocks WHERE id IN "
+            f"({','.join('?' * len(row_ids))}) ORDER BY id", row_ids).fetchall()
         page_no = rows[0]["page_no"]
-        bbox = (min(r["x0"] for r in rows), min(r["y0"] for r in rows),
-                max(r["x1"] for r in rows), max(r["y1"] for r in rows))
+        # A quote can straddle a page break. Union the boxes only within the
+        # page the quote starts on: merging a box at the foot of one page with
+        # one at the head of the next produces a rectangle on neither page.
+        same_page = [r for r in rows if r["page_no"] == page_no]
+        bbox = (min(r["x0"] for r in same_page), min(r["y0"] for r in same_page),
+                max(r["x1"] for r in same_page), max(r["y1"] for r in same_page))
     conn.execute(
         "INSERT INTO evidence(fact_id,quote,page_no,char_start,char_end,block_ids,"
         "x0,y0,x1,y1) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -1765,8 +1779,10 @@ git commit -m "Decide fact pairs by rule where values and qualifiers settle it"
 - Test: `tests/test_verify.py`
 
 **Interfaces:**
-- Produces: `adjudicate(client, a, b, rule_v, diff) -> dict` with keys `verdict`,
-  `reason_code`, `explanation`, `claimed_transform`, `confidence`;
+- Produces: `adjudicate(client, a, b, rule_verdict, diff, a_meta, b_meta) -> dict`
+  with keys `verdict`, `reason_code`, `explanation`, `claimed_transform`,
+  `confidence`, where `a_meta`/`b_meta` carry `filename` and `page_no` for the
+  prompt;
   `verify(a, b, claimed_transform, tol) -> tuple[bool, str]`.
 
 Recognised transforms: `{"kind": "scale", "factor": 100}`, `{"kind": "basis"}`,
