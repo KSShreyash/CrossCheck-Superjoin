@@ -87,3 +87,39 @@ def test_qualifier_diff_ignores_keys_absent_from_both():
     a = _f(8.1e10, quals={"basis": "consolidated"})
     b = _f(8.1e10, quals={"basis": "consolidated"})
     assert qualifier_diff(a, b) == {}
+
+
+def test_period_only_difference_is_settled_without_the_model():
+    # FY23 against FY24 is reporting, not disagreement. Deciding it by rule
+    # also stops the model asserting the two cover the same period.
+    a = _f(7.2253e10, period=("2022-04-01", "2023-03-31"))
+    b = _f(8.1415e10, period=FY24)
+    verdict, diff = rule_verdict(a, b, tol=1e-3)
+    assert verdict == "different_period"
+    assert list(diff) == ["period"]
+
+
+def test_period_plus_another_qualifier_still_needs_judgement():
+    a = _f(7.2253e10, period=("2022-04-01", "2023-03-31"),
+           quals={"basis": "standalone"})
+    b = _f(8.1415e10, period=FY24, quals={"basis": "consolidated"})
+    assert rule_verdict(a, b, tol=1e-3)[0] == "needs_model"
+
+
+def test_a_differing_publisher_does_not_block_a_contradiction():
+    # Two institutions publishing different numbers for the same measure over
+    # the same period is the most interesting kind of contradiction. Who said
+    # it is provenance, not a property of what was measured.
+    a = _f(6.5, "PERCENT", period=FY26, quals={"source": "central bank"})
+    b = _f(6.6, "PERCENT", period=FY26, quals={"source": "fund staff"})
+    verdict, diff = rule_verdict(a, b, tol=1e-3)
+    assert verdict == "contradiction_candidate"
+    assert "source" in diff, "provenance is still recorded and shown"
+
+
+def test_provenance_plus_a_real_qualifier_still_needs_judgement():
+    a = _f(6.5, "PERCENT", period=FY26,
+           quals={"source": "central bank", "vintage": "projection"})
+    b = _f(6.6, "PERCENT", period=FY26,
+           quals={"source": "fund staff", "vintage": "actual"})
+    assert rule_verdict(a, b, tol=1e-3)[0] == "reconcilable"

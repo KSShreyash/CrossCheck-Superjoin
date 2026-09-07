@@ -175,10 +175,28 @@ whether the canonical values agree within tolerance. That yields a provisional v
 | agree | any | none differ | corroborates — by rule, no model call |
 | agree | any | some differ | corroborates with caveat — by rule |
 | differ | either unknown | any | insufficient context — recorded, no model call |
-| differ | both known | exactly one differs | reconcilable — model explains |
+| differ | both known | only the period | reconciled by context — by rule, no model call |
+| differ | both known | exactly one other | reconcilable — model explains |
 | differ | both known | none differ | contradiction candidate — model adjudicates |
 | different units | any | any | unrelated — no model call |
 | non-numeric | any | any | model adjudicates |
+
+Two distinctions in that table were learned by running the thing rather than reasoning
+about it.
+
+A difference that is *only* the period is settled by rule and never reaches the model.
+FY23 reporting a different number from FY24 is what reporting looks like. Sending it to
+the model invites a confident wrong answer: asked to compare the two, it asserted they
+covered the same period and called it a contradiction.
+
+And qualifiers are not all alike. Some describe **the measurement** — basis, vintage,
+scope, segment, period — and a difference there means the two facts may not be
+comparable. Others describe **provenance**: who published the claim. Those must never
+block a contradiction, because two institutions publishing different numbers for the
+same measure over the same period is the most interesting disagreement there is. The
+RBI and the IMF differing on next year's growth is the case worth showing, and an
+earlier version of this rule silently suppressed it. Provenance is still recorded and
+displayed; it just does not count towards comparability.
 
 The third row carries most of the weight, and it is the row I got wrong first time.
 An absent period means *unknown*, not "the same period as the other fact". Treating

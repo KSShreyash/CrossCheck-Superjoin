@@ -42,14 +42,14 @@ def wrap(text, indent="      "):
 
 def show(row):
     print(f"    A  {row['a_doc']}  page {row['a_page']}")
-    print(wrap(f"“{row['a_quote']}”"))
+    print(wrap(f"\"{row['a_quote']}\""))
     print(f"       {row['a_metric']} = {row['a_value']} {row['a_unit'] or ''}"
           f"  period {row['a_period']}  {row['a_quals']}")
     if row["a_canon"] is not None:
         print(f"       normalised: {row['a_canon']:,.2f} {row['a_cunit']}")
     print()
     print(f"    B  {row['b_doc']}  page {row['b_page']}")
-    print(wrap(f"“{row['b_quote']}”"))
+    print(wrap(f"\"{row['b_quote']}\""))
     print(f"       {row['b_metric']} = {row['b_value']} {row['b_unit'] or ''}"
           f"  period {row['b_period']}  {row['b_quals']}")
     if row["b_canon"] is not None:

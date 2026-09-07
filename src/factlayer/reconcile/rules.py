@@ -2,6 +2,21 @@ from ..models import Fact
 from ..normalize.units import values_agree
 
 
+# Qualifiers describe the measurement; provenance describes who reported it.
+# Only the former affects whether two facts are comparable. Two institutions
+# publishing different numbers for the same measure over the same period is a
+# contradiction - it is the most interesting kind - so provenance must never
+# be read as a reason they are measuring different things. These are generic
+# roles rather than anything specific to these documents.
+PROVENANCE_KEYS = {"source", "publisher", "attribution", "reported_by",
+                   "reporter", "author", "institution"}
+
+
+def measurement_diff(diff: dict[str, tuple]) -> dict[str, tuple]:
+    """The part of a qualifier difference that bears on comparability."""
+    return {k: v for k, v in diff.items() if k not in PROVENANCE_KEYS}
+
+
 def qualifier_diff(a: Fact, b: Fact) -> dict[str, tuple]:
     """Which recorded qualifiers differ between two facts.
 
@@ -43,8 +58,17 @@ def rule_verdict(a: Fact, b: Fact, tol: float) -> tuple[str, dict]:
     if a.period_start is None or b.period_start is None:
         return "insufficient_context", diff
 
-    if len(diff) == 1:
+    material = measurement_diff(diff)
+    if list(material) == ["period"]:
+        # Two different years reporting different numbers is what reporting
+        # looks like, not a disagreement. Deciding it here also keeps the
+        # model from being asked a question it can get wrong: given FY23
+        # against FY24 it will happily assert they cover the same period.
+        return "different_period", diff
+    if len(material) == 1:
         return "reconcilable", diff
-    if not diff:
+    if not material:
+        # nothing about the measurement distinguishes them; a differing
+        # publisher is exactly what makes this worth surfacing
         return "contradiction_candidate", diff
     return "needs_model", diff

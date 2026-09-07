@@ -2441,6 +2441,38 @@ git commit -m "Add README with setup, approach and the four demonstrated cases"
 
 ## Self-Review Notes
 
+### Seventh round: found by running it
+
+Milestones 3 to 5 were built, and a synthetic four-document fixture was run through the
+whole pipeline offline. Two defects surfaced that no amount of reading had caught, both
+in the reconciliation rules, and both would have produced a misleading demo.
+
+22. **A period-only difference was being sent to the model, which fabricated a
+    contradiction.** FY23 revenue paired against FY24 revenue differs in exactly one
+    qualifier, so it was classified `reconcilable` and handed over for judgement. The
+    model answered that both figures "describe the same measure over the same period"
+    - flatly untrue - and called it a contradiction. The fixture showed four such false
+    contradictions out of eleven relations. A difference that is only the period is now
+    resolved by rule as `reconciled_by_context`, with no model call: cheaper, safer, and
+    obviously correct.
+23. **Then the fix for 22 suppressed the one real contradiction.** Guarding against the
+    model claiming a contradiction whenever any qualifier differs also caught the RBI
+    versus IMF growth pair, which differs only in who published it. That is the single
+    most interesting relation in the corpus and it silently became `needs_review`.
+    Qualifiers are now split: those describing the measurement (basis, vintage, scope,
+    segment, period) bear on comparability, while provenance (source, publisher,
+    attribution) does not. Two institutions disagreeing about the same measure over the
+    same period is a contradiction, not an incomparability. Provenance is still recorded
+    and shown.
+
+After both fixes the fixture produces exactly the intended shape: one cross-document
+corroboration, one genuine contradiction, nine reconciled by context, and no false
+contradictions.
+
+The lesson is the one from rounds four and five, sharper. Every defect worth finding in
+this project came from executing something. Reading found wording; running found the
+bugs.
+
 ### Sixth review round
 
 This pass audited the two documents against each other rather than re-reading either.

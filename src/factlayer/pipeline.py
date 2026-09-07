@@ -16,7 +16,7 @@ from .normalize.periods import normalize_period
 from .normalize.units import normalize_value
 from .pairing import candidate_pairs
 from .reconcile.adjudicate import adjudicate
-from .reconcile.rules import rule_verdict
+from .reconcile.rules import measurement_diff, rule_verdict
 from .reconcile.verify import verify
 from .store import (save_blocks, save_document, save_fact, save_gaps,
                     save_rejected)
@@ -28,6 +28,7 @@ RULE_FINAL = {
     "corroborates_with_caveat": "corroborates",
     "insufficient_context": "insufficient_context",
     "unrelated": "unrelated",
+    "different_period": "reconciled_by_context",
 }
 
 
@@ -170,6 +171,10 @@ def build_relations(conn: sqlite3.Connection, client,
 
         if rv in RULE_FINAL:
             final = RULE_FINAL[rv]
+            if rv == "different_period":
+                reason_code = "different_period"
+                explanation = ("The two facts cover different periods, so their "
+                               "values are not in conflict.")
         elif max_model_calls is not None and calls >= max_model_calls:
             # budget spent: record it honestly rather than guessing
             final = "insufficient_context"
@@ -196,6 +201,16 @@ def build_relations(conn: sqlite3.Connection, client,
             if model_verdict == "corroborates" and rv not in (
                     "corroborates", "corroborates_with_caveat"):
                 final, agreed = "needs_review", 0
+
+            # A contradiction asserts the two facts are comparable. If any
+            # qualifier differs, something distinguishes them, so the claim is
+            # held rather than taken - otherwise the model can turn a change of
+            # basis or scope into a fabricated disagreement.
+            material = measurement_diff(diff)
+            if model_verdict == "contradicts" and material:
+                final, agreed = "needs_review", 0
+                explanation = (f"{explanation} [held: {', '.join(material)} differs, "
+                               "so the two may not be comparable]")
 
         conn.execute(
             "INSERT OR REPLACE INTO relations(fact_a,fact_b,rule_verdict,"
