@@ -937,7 +937,7 @@ git commit -m "Parse Indian fiscal years, quarters and IMF FY notation"
 
 ```python
 # tests/test_llm_cache.py
-import json, pytest
+import pytest
 from factlayer.db import connect, init_schema
 from factlayer.llm.client import LLMClient, NoAPIKey
 from factlayer.llm.cache import cache_key, put
@@ -958,6 +958,18 @@ def test_cache_miss_without_key_raises(tmp_path):
 def test_key_is_stable_and_sensitive(tmp_path):
     assert cache_key("m", "v1", "a") == cache_key("m", "v1", "a")
     assert cache_key("m", "v1", "a") != cache_key("m", "v2", "a")
+
+def test_truncated_json_raises_a_named_error():
+    from factlayer.llm.client import _loads_lenient, BadModelJSON
+    with pytest.raises(BadModelJSON):
+        _loads_lenient('{"facts": [{"metric": "revenue"}, {"metric": "EBI')
+
+def test_rate_limit_is_retryable_but_bad_json_is_not():
+    from factlayer.llm.client import _is_retryable, BadModelJSON
+    assert _is_retryable(Exception('429 Resource has been exhausted'))
+    assert _is_retryable(Exception('503 Service Unavailable'))
+    assert not _is_retryable(BadModelJSON('truncated'))
+    assert not _is_retryable(ValueError('bad argument'))
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -988,20 +1000,37 @@ def put(conn: sqlite3.Connection, key: str, response: dict) -> None:
 - [ ] **Step 4: Implement client.py**
 
 ```python
-import json, re, sqlite3
+import json, re, sqlite3, time
 from . import cache
 
 class NoAPIKey(RuntimeError):
     """Cache miss with no API key configured."""
+
+class BadModelJSON(RuntimeError):
+    """Model returned something that is not usable JSON."""
+
+# free-tier quota and transient server errors are worth waiting out;
+# a malformed response is not, because temperature 0 reproduces it
+_RETRYABLE = ("429", "rate limit", "resource_exhausted", "quota", "exhausted",
+              "503", "unavailable", "500", "internal", "deadline")
+
+def _is_retryable(exc: Exception) -> bool:
+    blob = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in blob for marker in _RETRYABLE)
 
 def _loads_lenient(text: str) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         m = re.search(r"\{.*\}", text, re.S)
-        if not m:
-            raise
-        return json.loads(m.group(0))
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except json.JSONDecodeError:
+                pass
+        raise BadModelJSON(
+            f"could not parse model output ({len(text)} chars); "
+            "most likely truncated at the output token limit")
 
 class LLMClient:
     def __init__(self, conn: sqlite3.Connection, api_key: str | None, model: str):
@@ -1015,7 +1044,8 @@ class LLMClient:
             self._model_obj = genai.GenerativeModel(self.model)
         return self._model_obj
 
-    def complete_json(self, prompt: str, prompt_version: str) -> dict:
+    def complete_json(self, prompt: str, prompt_version: str,
+                      max_attempts: int = 5) -> dict:
         key = cache.cache_key(self.model, prompt_version, prompt)
         hit = cache.get(self.conn, key)
         if hit is not None:
@@ -1024,19 +1054,38 @@ class LLMClient:
             raise NoAPIKey(
                 "No cached response and GEMINI_API_KEY is unset. "
                 "Set a key to ingest documents the cache has not seen.")
-        resp = self._provider().generate_content(
-            prompt,
-            generation_config={"temperature": 0,
-                               "response_mime_type": "application/json"})
-        data = _loads_lenient(resp.text)
+
+        for attempt in range(max_attempts):
+            try:
+                resp = self._provider().generate_content(
+                    prompt,
+                    generation_config={
+                        "temperature": 0,
+                        "response_mime_type": "application/json",
+                        # a 12k-char window can yield a lot of facts; the
+                        # default ceiling truncates the JSON mid-object
+                        "max_output_tokens": 8192,
+                    })
+                break
+            except Exception as exc:
+                if attempt == max_attempts - 1 or not _is_retryable(exc):
+                    raise
+                # free tier rations requests per minute, so wait it out
+                time.sleep(min(2 ** attempt * 2, 60))
+
+        data = _loads_lenient(resp.text)      # BadModelJSON is not retried
         cache.put(self.conn, key, data)
         return data
 ```
 
+The retry exists because the free tier rations requests per minute and a long
+ingest will hit that ceiling. Malformed JSON is deliberately *not* retried:
+temperature is zero, so the model reproduces it and retrying only burns quota.
+
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/test_llm_cache.py -v`
-Expected: 3 passed
+Expected: 5 passed
 
 - [ ] **Step 6: Commit**
 
@@ -1102,6 +1151,25 @@ def test_hallucinated_quote_is_rejected(tmp_path):
 
 def test_locate_quote_tolerates_whitespace():
     assert locate_quote("a  b\nc", "a b c") is not None
+
+def test_overlap_twins_are_deduped_but_other_documents_survive():
+    from factlayer.extract import dedupe_facts
+    from factlayer.models import Fact
+    def _f(doc, conf, quote, value='81,415.38'):
+        f = Fact(doc, 'Delhivery', 'revenue from operations', value,
+                 None, 'Rs million', 'FY24')
+        f.evidence_quote, f.confidence = quote, conf
+        return f
+    # same sentence seen twice because the windows overlap
+    twin_a = _f(1, 0.90, 'Revenue from operations  stood at  Rs 81,415.38 million')
+    twin_b = _f(1, 0.95, 'Revenue from operations stood at Rs 81,415.38 million')
+    other_value = _f(1, 0.90, 'as against Rs 72,253.01 million', '72,253.01')
+    other_doc = _f(2, 0.80, 'Revenue from operations stood at Rs 81,415.38 million')
+    out = dedupe_facts([twin_a, twin_b, other_value, other_doc])
+    assert len(out) == 3
+    kept = [f for f in out if f.doc_id == 1 and f.value_raw == '81,415.38']
+    assert len(kept) == 1 and kept[0].confidence == 0.95
+    assert any(f.doc_id == 2 for f in out), 'cross-document copy is a real corroboration'
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1218,13 +1286,34 @@ def extract_facts(client, window: Window, doc_id: int
         fact.span = span            # consumed by the persistence layer
         accepted.append(fact)
     return accepted, rejected
+
+def dedupe_facts(facts: list[Fact]) -> list[Fact]:
+    """Collapse facts re-extracted from the overlap between windows.
+
+    Windows overlap so that a fact straddling a boundary is not lost, but that
+    means roughly a tenth of blocks are read twice and their facts arrive in
+    duplicate. Left alone the twins pair with each other and register as
+    corroborations, inflating the counts with a sentence agreeing with itself.
+
+    Keyed per document, so the same fact appearing in a DIFFERENT document
+    survives - that one is a real cross-document corroboration.
+    """
+    best: dict[tuple, Fact] = {}
+    for f in facts:
+        key = (f.doc_id, f.subject.strip().lower(), f.metric.strip().lower(),
+               (f.value_raw or "").strip(), (f.period_raw or "").strip(),
+               _WS.sub(" ", f.evidence_quote).strip().lower())
+        current = best.get(key)
+        if current is None or f.confidence > current.confidence:
+            best[key] = f
+    return list(best.values())
 ```
 
 
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/test_extract.py -v`
-Expected: 3 passed
+Expected: 4 passed
 
 - [ ] **Step 6: Commit**
 
@@ -1819,13 +1908,17 @@ def _f(value, quals=None, unit="INR"):
     return f
 
 def test_true_scale_claim_is_confirmed():
-    ok, note = verify(_f(8.142e10), _f(8.141538e10),
-                      {"kind": "scale", "factor": 1}, tol=1e-3)
-    assert ok
+    # The realistic case: the text omitted the scale word, so normalisation left
+    # the pair a hundred-fold apart and the model proposes the missing factor.
+    # (A pair that already agrees never reaches the model - the rules settle it.)
+    ok, note = verify(_f(8.142e10), _f(8.141538e8),
+                      {"kind": "scale", "factor": 100}, tol=1e-3)
+    assert ok and "factor of 100" in note
 
 def test_false_scale_claim_is_rejected():
+    # standalone vs consolidated revenue: no scale factor reconciles these
     ok, note = verify(_f(7.454082e10), _f(8.141538e10),
-                      {"kind": "scale", "factor": 1}, tol=1e-3)
+                      {"kind": "scale", "factor": 100}, tol=1e-3)
     assert not ok and "do not reconcile" in note
 
 def test_basis_claim_requires_basis_to_actually_differ():
@@ -2043,10 +2136,32 @@ Expected: FAIL, module missing
 
 Wire the stages in order: `extract_blocks` → `mark_boilerplate` → `find_gaps` →
 `save_document` / `save_blocks` / `save_gaps` → `build_windows` sorted by `-density` →
-`extract_facts` per window → normalise each fact with `normalize_value` and
-`normalize_period` → `canonicalise` over the distinct subjects and metrics (skipped when
-`canonicalise_terms=False`) → `save_fact` / `save_rejected`. Update the `jobs` row after
-each window so progress is observable.
+`extract_facts` per window → `dedupe_facts` across the whole document → normalise each
+fact with `normalize_value` and `normalize_period` → `canonicalise` over the distinct
+subjects and metrics (skipped when `canonicalise_terms=False`) → `save_fact` /
+`save_rejected`. Update the `jobs` row after each window so progress is observable.
+
+Isolate each window, or one bad response destroys a hundred pages of work:
+
+```python
+from .llm.client import BadModelJSON, NoAPIKey
+
+for window in windows:
+    try:
+        got, bad = extract_facts(client, window, doc_id)
+    except NoAPIKey:
+        raise                      # nothing is cached and there is no key: stop
+    except BadModelJSON as exc:
+        rejected.append({"payload": {"window_index": window.index},
+                         "reason": f"unusable model output: {exc}"})
+        continue                   # this window yields nothing; the rest proceed
+    facts.extend(got)
+    rejected.extend(bad)
+    _bump_job(conn, job_id, done=window.index + 1, facts=len(facts))
+```
+
+`NoAPIKey` propagates deliberately: it means the run cannot proceed at all, and
+failing loudly beats writing an empty knowledge layer that looks like a result.
 
 `build_relations` loads all facts, calls `candidate_pairs`, applies `rule_verdict`, calls
 `adjudicate` for anything not settled by rule, runs `verify` on any claimed transform,
@@ -2202,6 +2317,36 @@ git commit -m "Add README with setup, approach and the four demonstrated cases"
 ---
 
 ## Self-Review Notes
+
+### Third review round
+
+Four more, found by probing failure modes rather than the happy path:
+
+9.  **Overlapping windows produced duplicate facts that corroborated themselves.**
+    Windows overlap by design so a fact straddling a boundary is not lost, but
+    measured against the real annual report that puts 11.6% of blocks in two
+    windows. Their facts arrive twice, pair with each other, and register as
+    corroborations - the demo would show an inflated count of a sentence agreeing
+    with itself. Added `dedupe_facts`, keyed per document so the same fact in a
+    *different* document still survives, since that one is a real corroboration.
+10. **No rate-limit handling at all.** The whole design rests on the free tier,
+    yet the client had no retry, so the first 429 during a 158-call ingest would
+    abort the run. Added bounded exponential backoff on quota and transient
+    server errors. Malformed JSON is deliberately not retried: temperature is
+    zero, so the model reproduces it and retrying only burns quota.
+11. **A truncated response destroyed the whole document.** `_loads_lenient` raised
+    a bare `JSONDecodeError` that propagated out of extraction, so one over-long
+    window lost all hundred pages. It now raises a named `BadModelJSON`, the
+    output token ceiling is set explicitly so truncation is rarer, and the
+    pipeline isolates each window and records the failure instead of aborting.
+    `NoAPIKey` still propagates on purpose - that means the run cannot proceed,
+    and failing loudly beats writing an empty knowledge layer that looks like a
+    result.
+12. **A verification test asserted something that cannot happen.** It claimed a
+    scale factor of 1 on values that already agree, but such a pair never reaches
+    the model at all - the rules settle it. Rewritten around the real scenario,
+    where the text omitted the scale word and the model proposes the missing
+    hundred-fold factor.
 
 ### Second review round
 
