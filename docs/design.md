@@ -105,6 +105,23 @@ facts permanently, and a fact never extracted can never be reconciled.
 
 Every call is cached under `sha256(model + prompt_version + window_text)`.
 
+**Duplicates.** Windows overlap so a fact spanning a boundary is not lost, which puts
+about a tenth of blocks — 11.6%, measured on the annual report — into two windows. Their
+facts arrive twice. Left alone the twins pair with each other and register as
+corroborations, so the system would report a sentence agreeing with itself. Facts are
+therefore deduplicated per document on subject, metric, value, period and normalised
+quote. The key is per document deliberately: the same fact in a *different* document is
+the cross-document corroboration we are looking for.
+
+**Failure handling.** Three things go wrong in practice and each is contained rather
+than fatal. A free-tier quota error or a transient server error is retried with bounded
+backoff. A malformed or truncated response raises a named error and costs that one
+window, not the document — a bare parse error propagating out of extraction would
+otherwise discard a hundred pages of work. Malformed JSON is deliberately not retried:
+temperature is zero, so the model reproduces it and retrying only burns quota. A missing
+API key with nothing cached is the one case that stops the run, because failing loudly
+beats writing an empty knowledge layer that looks like a result.
+
 ### 2. Normalisation
 
 Deterministic, pure, and the most heavily tested part of the codebase. Four normalisers:
@@ -124,6 +141,19 @@ Deterministic, pure, and the most heavily tested part of the codebase. Four norm
 
 Clustering is derived from the ingested corpus, so no alias list ships with the code.
 
+Documents arrive one at a time, so clustering has to be incremental, and the naive
+version of that is quietly broken. If the model is shown only the terms it has not seen
+before, a metric arriving with the second document cannot join a group created by the
+first: "revenue from services" becomes one canonical id, "Revenue from Operations"
+becomes another, and the two never pair. That is the headline corroboration failing
+silently. The prompt therefore carries the groups already assigned and asks the model to
+reuse an id when one fits.
+
+The cost is a small order dependency: because that prompt reflects what was ingested
+before it, so does its cache key. The committed cache replays only if documents are
+ingested in the recorded order. Extraction is unaffected, since a window's text does not
+depend on what came earlier.
+
 ### 3. Pairing
 
 All-pairs comparison is quadratic and unnecessary. Candidates come from the union of two
@@ -140,18 +170,65 @@ reconciliation case in the whole starter set.
 The rule layer runs first and computes, for each pair, which qualifiers differ and
 whether the canonical values agree within tolerance. That yields a provisional verdict:
 
-| Values | Qualifiers | Verdict |
-| --- | --- | --- |
-| agree | none differ | corroborates — decided by rule, no model call |
-| agree | some differ | corroborates with caveat |
-| differ | exactly one differs | reconcilable — model explains and confirms or denies |
-| differ | none differ | contradiction candidate — model adjudicates |
-| non-numeric | — | model adjudicates |
+| Values | Periods | Qualifiers | Verdict |
+| --- | --- | --- | --- |
+| agree | any | none differ | corroborates — by rule, no model call |
+| agree | any | some differ | corroborates with caveat — by rule |
+| differ | either unknown | any | insufficient context — recorded, no model call |
+| differ | both known | only the period | reconciled by context — by rule, no model call |
+| differ | both known | exactly one other | reconcilable — model explains |
+| differ | both known | none differ | contradiction candidate — model adjudicates |
+| different units | any | any | unrelated — no model call |
+| non-numeric | any | any | model adjudicates |
 
-Pairs that agree outright are settled without a model call, which is most of what makes a
-free tier workable. Attribute facts always go to the model, because "was a director" versus
-"resigned with effect from 1 July 2024" is a judgement about time and status that
-arithmetic cannot make.
+Two distinctions in that table were learned by running the thing rather than reasoning
+about it.
+
+A difference that is *only* the period is settled by rule and never reaches the model.
+FY23 reporting a different number from FY24 is what reporting looks like. Sending it to
+the model invites a confident wrong answer: asked to compare the two, it asserted they
+covered the same period and called it a contradiction.
+
+And qualifiers are not all alike. Some describe **the measurement** — basis, vintage,
+scope, segment, period — and a difference there means the two facts may not be
+comparable. Others describe **provenance**: who published the claim. Those must never
+block a contradiction, because two institutions publishing different numbers for the
+same measure over the same period is the most interesting disagreement there is. The
+RBI and the IMF differing on next year's growth is the case worth showing, and an
+earlier version of this rule silently suppressed it. Provenance is still recorded and
+displayed; it just does not count towards comparability.
+
+The third row carries most of the weight, and it is the row I got wrong first time.
+An absent period means *unknown*, not "the same period as the other fact". Treating
+two undated facts as contemporaneous made every difference in their values look like a
+contradiction: measured across two starter documents, that manufactured 1,480 false
+contradictions, 45% of all pairs. Refusing to rule on them cut adjudication calls
+sevenfold and cost nothing, because every case worth demonstrating carries an explicit
+period on both sides.
+
+`insufficient_context` is a real answer rather than a failure. The pair is stored and
+visible, the system simply declines to claim a relationship it cannot support.
+
+Two vocabularies exist and they are easy to confuse. The verdicts above are internal to
+the rule layer. What the API filters on, the UI groups by, and this document quotes is a
+single `final_verdict` per relation:
+
+| `final_verdict` | meaning |
+| --- | --- |
+| `corroborates` | the two facts agree, by rule or confirmed by the model |
+| `contradicts` | comparable facts that genuinely disagree |
+| `reconciled_by_context` | they differ, and a named difference explains it |
+| `insufficient_context` | not enough qualifiers to say anything honestly |
+| `unrelated` | not about the same measurement |
+| `needs_review` | rule and model disagree, or a claimed transform failed to verify |
+
+Every relation carries one. Roughly three quarters never reach the model, so leaving
+their verdict unset would hide most of the knowledge layer behind a filter matching
+nothing.
+
+Attribute facts always go to the model, because "was a director" versus "resigned with
+effect from 1 July 2024" is a judgement about time and status that arithmetic cannot
+make.
 
 The model returns a relation, a reason code, an explanation, a confidence, and — when it
 claims a reconciliation — the **transformation it is claiming**: a scale factor, a change
@@ -171,10 +248,16 @@ the natural place to point during the failure-case discussion.
 
 ### 6. Storage
 
-SQLite, one file. Tables: `documents`, `blocks`, `facts`, `evidence`, `entities`,
-`metrics`, `relations`, `llm_cache`, `rejected_facts`, `jobs`. Embeddings are float32
+SQLite, one file. Tables: `documents`, `blocks`, `facts`, `evidence`, `canon_terms`,
+`relations`, `llm_cache`, `rejected_facts`, `gaps`, `jobs`. Embeddings are float32
 BLOBs compared with numpy; at a few thousand facts brute-force cosine is sub-millisecond
 and needs no extra service.
+
+Two constraints carry weight. Documents are keyed by content hash, so re-uploading a
+file is a no-op rather than a second copy. Relations are unique on their fact pair,
+because relation building runs after every upload and re-pairs documents already
+ingested — without that, a third document would double every relation from the first
+two. Re-running refreshes a verdict instead of duplicating it.
 
 No graph database. Relations are one table with two foreign keys, the queries are joins,
 and the brief is explicit that a graph store is not itself the answer. SQLite also means
@@ -192,7 +275,7 @@ GET  /api/documents           list with counts
 GET  /api/documents/{id}/gaps pages we could not read, and why
 GET  /api/facts               filter by entity, metric, period, document, free text
 GET  /api/facts/{id}          fact, evidence, bbox, related facts
-GET  /api/relations           filter by type, including needs_review
+GET  /api/relations           filter by final_verdict (see below)
 GET  /api/relations/{id}      both sides, both quotes, rule verdict, model explanation
 GET  /api/stats               header counts
 ```
@@ -240,6 +323,19 @@ must not block evaluation.
 - **Recall is unmeasured.** There is no labelled ground truth for these documents, so we
   can say every stored fact is grounded, but not what fraction of the facts present were
   found.
+- **Period coverage limits how much can be said.** A fact without a parseable period can
+  never be part of a contradiction, by design. In a dry run over two starter documents
+  only 39% of facts carried one, which put most pairs in `insufficient_context`. A real
+  extraction should do better than that dry run's crude stand-in, but the honest number
+  belongs in the README once the real ingest has run, because it bounds how much of the
+  corpus the system can reason about at all.
+- **Pairing is quadratic.** 0.39s at the ~1,250 facts the starter set produces and 2.2s
+  at 3,000, so it is a non-issue here, but the blocking would need rewriting before the
+  "many documents in one layer" extension.
+- **Cache replay depends on ingest order.** Canonicalisation is incremental, so its
+  prompt — and therefore its cache key — reflects what was ingested before it. The
+  committed cache replays in the recorded order; a different order re-asks those
+  questions and needs a key.
 
 ## Cases to demonstrate
 

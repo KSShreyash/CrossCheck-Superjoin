@@ -279,6 +279,9 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # background ingest writes while the UI polls; without this the reader
+    # raises "database is locked" instead of waiting for the writer
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -934,7 +937,7 @@ git commit -m "Parse Indian fiscal years, quarters and IMF FY notation"
 
 ```python
 # tests/test_llm_cache.py
-import json, pytest
+import pytest
 from factlayer.db import connect, init_schema
 from factlayer.llm.client import LLMClient, NoAPIKey
 from factlayer.llm.cache import cache_key, put
@@ -955,6 +958,18 @@ def test_cache_miss_without_key_raises(tmp_path):
 def test_key_is_stable_and_sensitive(tmp_path):
     assert cache_key("m", "v1", "a") == cache_key("m", "v1", "a")
     assert cache_key("m", "v1", "a") != cache_key("m", "v2", "a")
+
+def test_truncated_json_raises_a_named_error():
+    from factlayer.llm.client import _loads_lenient, BadModelJSON
+    with pytest.raises(BadModelJSON):
+        _loads_lenient('{"facts": [{"metric": "revenue"}, {"metric": "EBI')
+
+def test_rate_limit_is_retryable_but_bad_json_is_not():
+    from factlayer.llm.client import _is_retryable, BadModelJSON
+    assert _is_retryable(Exception('429 Resource has been exhausted'))
+    assert _is_retryable(Exception('503 Service Unavailable'))
+    assert not _is_retryable(BadModelJSON('truncated'))
+    assert not _is_retryable(ValueError('bad argument'))
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -985,20 +1000,37 @@ def put(conn: sqlite3.Connection, key: str, response: dict) -> None:
 - [ ] **Step 4: Implement client.py**
 
 ```python
-import json, re, sqlite3
+import json, re, sqlite3, time
 from . import cache
 
 class NoAPIKey(RuntimeError):
     """Cache miss with no API key configured."""
+
+class BadModelJSON(RuntimeError):
+    """Model returned something that is not usable JSON."""
+
+# free-tier quota and transient server errors are worth waiting out;
+# a malformed response is not, because temperature 0 reproduces it
+_RETRYABLE = ("429", "rate limit", "resource_exhausted", "quota", "exhausted",
+              "503", "unavailable", "500", "internal", "deadline")
+
+def _is_retryable(exc: Exception) -> bool:
+    blob = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in blob for marker in _RETRYABLE)
 
 def _loads_lenient(text: str) -> dict:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         m = re.search(r"\{.*\}", text, re.S)
-        if not m:
-            raise
-        return json.loads(m.group(0))
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except json.JSONDecodeError:
+                pass
+        raise BadModelJSON(
+            f"could not parse model output ({len(text)} chars); "
+            "most likely truncated at the output token limit")
 
 class LLMClient:
     def __init__(self, conn: sqlite3.Connection, api_key: str | None, model: str):
@@ -1012,7 +1044,8 @@ class LLMClient:
             self._model_obj = genai.GenerativeModel(self.model)
         return self._model_obj
 
-    def complete_json(self, prompt: str, prompt_version: str) -> dict:
+    def complete_json(self, prompt: str, prompt_version: str,
+                      max_attempts: int = 5) -> dict:
         key = cache.cache_key(self.model, prompt_version, prompt)
         hit = cache.get(self.conn, key)
         if hit is not None:
@@ -1021,19 +1054,38 @@ class LLMClient:
             raise NoAPIKey(
                 "No cached response and GEMINI_API_KEY is unset. "
                 "Set a key to ingest documents the cache has not seen.")
-        resp = self._provider().generate_content(
-            prompt,
-            generation_config={"temperature": 0,
-                               "response_mime_type": "application/json"})
-        data = _loads_lenient(resp.text)
+
+        for attempt in range(max_attempts):
+            try:
+                resp = self._provider().generate_content(
+                    prompt,
+                    generation_config={
+                        "temperature": 0,
+                        "response_mime_type": "application/json",
+                        # a 12k-char window can yield a lot of facts; the
+                        # default ceiling truncates the JSON mid-object
+                        "max_output_tokens": 8192,
+                    })
+                break
+            except Exception as exc:
+                if attempt == max_attempts - 1 or not _is_retryable(exc):
+                    raise
+                # free tier rations requests per minute, so wait it out
+                time.sleep(min(2 ** attempt * 2, 60))
+
+        data = _loads_lenient(resp.text)      # BadModelJSON is not retried
         cache.put(self.conn, key, data)
         return data
 ```
 
+The retry exists because the free tier rations requests per minute and a long
+ingest will hit that ceiling. Malformed JSON is deliberately *not* retried:
+temperature is zero, so the model reproduces it and retrying only burns quota.
+
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/test_llm_cache.py -v`
-Expected: 3 passed
+Expected: 5 passed
 
 - [ ] **Step 6: Commit**
 
@@ -1099,6 +1151,25 @@ def test_hallucinated_quote_is_rejected(tmp_path):
 
 def test_locate_quote_tolerates_whitespace():
     assert locate_quote("a  b\nc", "a b c") is not None
+
+def test_overlap_twins_are_deduped_but_other_documents_survive():
+    from factlayer.extract import dedupe_facts
+    from factlayer.models import Fact
+    def _f(doc, conf, quote, value='81,415.38'):
+        f = Fact(doc, 'Delhivery', 'revenue from operations', value,
+                 None, 'Rs million', 'FY24')
+        f.evidence_quote, f.confidence = quote, conf
+        return f
+    # same sentence seen twice because the windows overlap
+    twin_a = _f(1, 0.90, 'Revenue from operations  stood at  Rs 81,415.38 million')
+    twin_b = _f(1, 0.95, 'Revenue from operations stood at Rs 81,415.38 million')
+    other_value = _f(1, 0.90, 'as against Rs 72,253.01 million', '72,253.01')
+    other_doc = _f(2, 0.80, 'Revenue from operations stood at Rs 81,415.38 million')
+    out = dedupe_facts([twin_a, twin_b, other_value, other_doc])
+    assert len(out) == 3
+    kept = [f for f in out if f.doc_id == 1 and f.value_raw == '81,415.38']
+    assert len(kept) == 1 and kept[0].confidence == 0.95
+    assert any(f.doc_id == 2 for f in out), 'cross-document copy is a real corroboration'
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1109,6 +1180,8 @@ Expected: FAIL, modules missing
 - [ ] **Step 3: Implement prompts.py (extraction prompt)**
 
 ```python
+import json
+
 EXTRACTION_PROMPT_VERSION = "extract-v1"
 
 EXTRACTION_PROMPT = """You extract checkable facts from an excerpt of a document.
@@ -1213,13 +1286,34 @@ def extract_facts(client, window: Window, doc_id: int
         fact.span = span            # consumed by the persistence layer
         accepted.append(fact)
     return accepted, rejected
+
+def dedupe_facts(facts: list[Fact]) -> list[Fact]:
+    """Collapse facts re-extracted from the overlap between windows.
+
+    Windows overlap so that a fact straddling a boundary is not lost, but that
+    means roughly a tenth of blocks are read twice and their facts arrive in
+    duplicate. Left alone the twins pair with each other and register as
+    corroborations, inflating the counts with a sentence agreeing with itself.
+
+    Keyed per document, so the same fact appearing in a DIFFERENT document
+    survives - that one is a real cross-document corroboration.
+    """
+    best: dict[tuple, Fact] = {}
+    for f in facts:
+        key = (f.doc_id, f.subject.strip().lower(), f.metric.strip().lower(),
+               (f.value_raw or "").strip(), (f.period_raw or "").strip(),
+               _WS.sub(" ", f.evidence_quote).strip().lower())
+        current = best.get(key)
+        if current is None or f.confidence > current.confidence:
+            best[key] = f
+    return list(best.values())
 ```
 
 
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/test_extract.py -v`
-Expected: 3 passed
+Expected: 4 passed
 
 - [ ] **Step 6: Commit**
 
@@ -1276,6 +1370,22 @@ def test_fact_evidence_resolves_to_page_and_bbox(tmp_path):
     assert row["page_no"] == 1
     assert row["x0"] == 10 and row["y1"] == 40
 
+def test_reuploading_a_document_returns_its_original_id(tmp_path):
+    # Guards a silent corruption: INSERT OR IGNORE that ignores still leaves
+    # lastrowid pointing at the connection's previous insert, so re-uploading
+    # a PDF after ingesting another one would return the OTHER document's id
+    # and file this document's blocks and facts under it.
+    conn = connect(tmp_path / "t.sqlite"); init_schema(conn)
+    first = save_document(conn, "sha-a", "a.pdf", "A", 10)
+    again = save_document(conn, "sha-a", "a.pdf", "A", 10)
+    other = save_document(conn, "sha-b", "b.pdf", "B", 5)
+    after_other = save_document(conn, "sha-a", "a.pdf", "A", 10)
+    assert again == first
+    assert other != first
+    assert after_other == first, "re-upload resolved to the wrong document"
+    assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 2
+
+
 @pytest.mark.parametrize("first", [
     "Revenue was 81,415.38 million",                      # single line
     "Revenue from operations\nwas 81,415.38 million",      # newline inside block
@@ -1310,7 +1420,11 @@ def save_document(conn, sha, filename, title, pages) -> int:
         "INSERT OR IGNORE INTO documents(sha256, filename, title, page_count) "
         "VALUES (?,?,?,?)", (sha, filename, title, pages))
     conn.commit()
-    if cur.lastrowid:
+    # rowcount is 1 when the row was inserted and 0 when it was ignored.
+    # Do NOT branch on lastrowid: when the insert is ignored it still reports
+    # the connection's previous successful insert, so re-uploading a document
+    # would return some other document's id and attach facts to the wrong file.
+    if cur.rowcount:
         return cur.lastrowid
     return conn.execute("SELECT id FROM documents WHERE sha256=?", (sha,)).fetchone()["id"]
 
@@ -1353,12 +1467,17 @@ def save_fact(conn, fact: Fact, window: Window, block_row_ids: list[int]) -> int
                if window.block_ids[p] < len(block_row_ids)]
     page_no, bbox = None, (None, None, None, None)
     if row_ids:
+        # ORDER BY id because IN (...) does not preserve the order given.
         rows = conn.execute(
-            f"SELECT page_no,x0,y0,x1,y1 FROM blocks WHERE id IN "
-            f"({','.join('?' * len(row_ids))})", row_ids).fetchall()
+            f"SELECT id,page_no,x0,y0,x1,y1 FROM blocks WHERE id IN "
+            f"({','.join('?' * len(row_ids))}) ORDER BY id", row_ids).fetchall()
         page_no = rows[0]["page_no"]
-        bbox = (min(r["x0"] for r in rows), min(r["y0"] for r in rows),
-                max(r["x1"] for r in rows), max(r["y1"] for r in rows))
+        # A quote can straddle a page break. Union the boxes only within the
+        # page the quote starts on: merging a box at the foot of one page with
+        # one at the head of the next produces a rectangle on neither page.
+        same_page = [r for r in rows if r["page_no"] == page_no]
+        bbox = (min(r["x0"] for r in same_page), min(r["y0"] for r in same_page),
+                max(r["x1"] for r in same_page), max(r["y1"] for r in same_page))
     conn.execute(
         "INSERT INTO evidence(fact_id,quote,page_no,char_start,char_end,block_ids,"
         "x0,y0,x1,y1) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -1382,7 +1501,7 @@ def save_rejected(conn, doc_id: int, rejected: list[dict]) -> None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_store.py -v`
-Expected: 4 passed
+Expected: 5 passed
 
 - [ ] **Step 5: Commit**
 
@@ -1438,6 +1557,26 @@ def test_known_terms_are_not_resent(tmp_path):
     conn.commit()
     client = LLMClient(conn, api_key=None, model="m")   # no key: a call would raise
     assert canonicalise(client, conn, "metric", ["x"]) == {"x": ("cid", "X")}
+
+def test_a_later_document_is_offered_the_existing_groups(tmp_path):
+    # Documents arrive one at a time, so a term from the second document must
+    # be able to join a group created by the first. If the prompt does not
+    # carry the existing groups, the same metric gets two canonical ids and
+    # nothing ever pairs across documents.
+    conn = connect(tmp_path / "t.sqlite"); init_schema(conn)
+    conn.execute("INSERT INTO canon_terms VALUES "
+                 "('metric','revenue from services','revenue_from_ops','Revenue')")
+    conn.commit()
+    prompt = build_canon_prompt("metric", ["Revenue from Operations"],
+                                {"revenue_from_ops": "Revenue"})
+    assert "revenue_from_ops" in prompt, "existing group must reach the model"
+    put(conn, cache_key("m", CANON_PROMPT_VERSION, prompt), {"groups": [
+        {"canon_id": "revenue_from_ops", "label": "Revenue",
+         "members": ["Revenue from Operations"]}]})
+    client = LLMClient(conn, api_key=None, model="m")
+    mapping = canonicalise(client, conn, "metric",
+                           ["revenue from services", "Revenue from Operations"])
+    assert mapping["Revenue from Operations"][0] == mapping["revenue from services"][0]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1457,6 +1596,14 @@ the same {kind}. Different scopes, segments, or reporting bases are the SAME {ki
 those distinctions are recorded separately as qualifiers. Genuinely different subjects
 stay apart.
 
+These groups already exist, from documents ingested earlier. If a name below belongs to
+one of them, reuse that canon_id exactly. Reusing an existing id is what lets the same
+{kind} be recognised across documents; minting a new id for something already known
+silently stops those facts ever being compared. Create a new id only when nothing fits.
+
+EXISTING GROUPS:
+{existing}
+
 Return JSON: {{"groups": [{{"canon_id": "snake_case_id", "label": "Readable label",
 "members": ["...", "..."]}}]}}
 Every input name must appear in exactly one group.
@@ -1465,9 +1612,12 @@ NAMES:
 {terms}
 """
 
-def build_canon_prompt(kind: str, terms: list[str]) -> str:
+def build_canon_prompt(kind: str, terms: list[str],
+                       existing: dict[str, str] | None = None) -> str:
     listed = "\n".join(f"- {t}" for t in sorted(set(terms)))
-    return CANON_PROMPT.format(kind=kind, terms=listed)
+    known = ("\n".join(f"- {cid}: {label}" for cid, label in sorted(existing.items()))
+             if existing else "(none yet - this is the first document)")
+    return CANON_PROMPT.format(kind=kind, terms=listed, existing=known)
 ```
 
 - [ ] **Step 4: Implement canon.py**
@@ -1487,7 +1637,12 @@ def canonicalise(client, conn, kind: str,
     if not pending:
         return {t: mapping[t] for t in raw_terms if t in mapping}
 
-    prompt = build_canon_prompt(kind, pending)
+    # Offer the groups already assigned. Without this a term from a document
+    # ingested later can never join an existing group, the same metric ends up
+    # with two canonical ids, and facts stop pairing across documents entirely
+    # - which is the one thing this system exists to do.
+    existing = {cid: label for cid, label in mapping.values()}
+    prompt = build_canon_prompt(kind, pending, existing)
     data = client.complete_json(prompt, CANON_PROMPT_VERSION)
     rows = []
     for group in data.get("groups", []):
@@ -1513,7 +1668,7 @@ def canonicalise(client, conn, kind: str,
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/test_canon.py -v`
-Expected: 2 passed
+Expected: 3 passed
 
 - [ ] **Step 6: Commit**
 
@@ -1600,6 +1755,11 @@ def candidate_pairs(facts: list[Fact], max_per_fact: int) -> list[tuple[int, int
         a, b = (i, j) if i < j else (j, i)
         if facts[a].entity_id and facts[b].entity_id and \
            facts[a].entity_id != facts[b].entity_id:
+            return
+        # incomparable units are noise, not disagreement: without this gate a
+        # rupee figure pairs with a percentage purely on shared metric words
+        if facts[a].canon_unit and facts[b].canon_unit and \
+           facts[a].canon_unit != facts[b].canon_unit:
             return
         scored[(a, b)] = max(scored.get((a, b), 0.0), score)
 
@@ -1701,6 +1861,30 @@ def test_attribute_facts_always_go_to_the_model():
     v, _ = rule_verdict(_f(None, None, claim="attribute"),
                         _f(None, None, claim="attribute"), tol=1e-3)
     assert v == "needs_model"
+
+def test_unknown_period_is_not_a_contradiction():
+    # An absent period means unknown, not 'same period as the other fact'.
+    # Treating None == None as a match manufactured 1,480 false contradictions
+    # across two starter documents (45% of all pairs).
+    a = _f(8.1e10, period=(None, None))
+    b = _f(7.2e10, period=(None, None))
+    verdict, _ = rule_verdict(a, b, tol=1e-3)
+    assert verdict == 'insufficient_context'
+
+def test_one_known_period_is_still_insufficient():
+    a = _f(8.1e10)
+    b = _f(7.2e10, period=(None, None))
+    assert rule_verdict(a, b, tol=1e-3)[0] == 'insufficient_context'
+
+def test_incomparable_units_are_unrelated_not_disputed():
+    a, b = _f(8.1e10, 'INR'), _f(6.5, 'PERCENT')
+    assert rule_verdict(a, b, tol=1e-3)[0] == 'unrelated'
+
+def test_known_periods_still_reach_a_contradiction():
+    # the RBI vs IMF growth case must survive the guard above
+    a = _f(6.5, 'PERCENT', period=('2025-04-01', '2026-03-31'))
+    b = _f(6.6, 'PERCENT', period=('2025-04-01', '2026-03-31'))
+    assert rule_verdict(a, b, tol=1e-3)[0] == 'contradiction_candidate'
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1733,9 +1917,19 @@ def rule_verdict(a: Fact, b: Fact, tol: float) -> tuple[str, dict]:
        or a.canon_value is None or b.canon_value is None:
         return "needs_model", diff
     if a.canon_unit != b.canon_unit:
-        return "needs_model", diff
+        # a rupee figure and a percentage are not in disagreement
+        return "unrelated", diff
     if values_agree(a.canon_value, b.canon_value, tol):
         return ("corroborates" if not diff else "corroborates_with_caveat"), diff
+
+    # Values differ. Calling that a contradiction asserts the two facts are
+    # comparable, and that cannot be asserted without knowing both periods.
+    # An absent period is unknown, NOT "the same period as the other one":
+    # treating None == None as a match manufactured 1,480 false contradictions
+    # across two starter documents, 45% of all pairs.
+    if a.period_start is None or b.period_start is None:
+        return "insufficient_context", diff
+
     if len(diff) == 1:
         return "reconcilable", diff
     if not diff:
@@ -1746,7 +1940,7 @@ def rule_verdict(a: Fact, b: Fact, tol: float) -> tuple[str, dict]:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_rules.py -v`
-Expected: 6 passed
+Expected: 10 passed
 
 - [ ] **Step 5: Commit**
 
@@ -1765,8 +1959,10 @@ git commit -m "Decide fact pairs by rule where values and qualifiers settle it"
 - Test: `tests/test_verify.py`
 
 **Interfaces:**
-- Produces: `adjudicate(client, a, b, rule_v, diff) -> dict` with keys `verdict`,
-  `reason_code`, `explanation`, `claimed_transform`, `confidence`;
+- Produces: `adjudicate(client, a, b, rule_verdict, diff, a_meta, b_meta) -> dict`
+  with keys `verdict`, `reason_code`, `explanation`, `claimed_transform`,
+  `confidence`, where `a_meta`/`b_meta` carry `filename` and `page_no` for the
+  prompt;
   `verify(a, b, claimed_transform, tol) -> tuple[bool, str]`.
 
 Recognised transforms: `{"kind": "scale", "factor": 100}`, `{"kind": "basis"}`,
@@ -1787,13 +1983,17 @@ def _f(value, quals=None, unit="INR"):
     return f
 
 def test_true_scale_claim_is_confirmed():
-    ok, note = verify(_f(8.142e10), _f(8.141538e10),
-                      {"kind": "scale", "factor": 1}, tol=1e-3)
-    assert ok
+    # The realistic case: the text omitted the scale word, so normalisation left
+    # the pair a hundred-fold apart and the model proposes the missing factor.
+    # (A pair that already agrees never reaches the model - the rules settle it.)
+    ok, note = verify(_f(8.142e10), _f(8.141538e8),
+                      {"kind": "scale", "factor": 100}, tol=1e-3)
+    assert ok and "factor of 100" in note
 
 def test_false_scale_claim_is_rejected():
+    # standalone vs consolidated revenue: no scale factor reconciles these
     ok, note = verify(_f(7.454082e10), _f(8.141538e10),
-                      {"kind": "scale", "factor": 1}, tol=1e-3)
+                      {"kind": "scale", "factor": 100}, tol=1e-3)
     assert not ok and "do not reconcile" in note
 
 def test_basis_claim_requires_basis_to_actually_differ():
@@ -2011,15 +2211,79 @@ Expected: FAIL, module missing
 
 Wire the stages in order: `extract_blocks` → `mark_boilerplate` → `find_gaps` →
 `save_document` / `save_blocks` / `save_gaps` → `build_windows` sorted by `-density` →
-`extract_facts` per window → normalise each fact with `normalize_value` and
-`normalize_period` → `canonicalise` over the distinct subjects and metrics (skipped when
-`canonicalise_terms=False`) → `save_fact` / `save_rejected`. Update the `jobs` row after
-each window so progress is observable.
+`extract_facts` per window → `dedupe_facts` across the whole document → normalise each
+fact with `normalize_value` and `normalize_period` → `canonicalise` over the distinct
+subjects and metrics (skipped when `canonicalise_terms=False`) → `save_fact` /
+`save_rejected`. Update the `jobs` row after each window so progress is observable.
+
+Isolate each window, or one bad response destroys a hundred pages of work:
+
+```python
+from .llm.client import BadModelJSON, NoAPIKey
+
+for window in windows:
+    try:
+        got, bad = extract_facts(client, window, doc_id)
+    except NoAPIKey:
+        raise                      # nothing is cached and there is no key: stop
+    except BadModelJSON as exc:
+        rejected.append({"payload": {"window_index": window.index},
+                         "reason": f"unusable model output: {exc}"})
+        continue                   # this window yields nothing; the rest proceed
+    facts.extend(got)
+    rejected.extend(bad)
+    _bump_job(conn, job_id, done=window.index + 1, facts=len(facts))
+```
+
+`NoAPIKey` propagates deliberately: it means the run cannot proceed at all, and
+failing loudly beats writing an empty knowledge layer that looks like a result.
+
+`_bump_job` is the progress writer the loop above calls:
+
+```python
+def _bump_job(conn, job_id, *, stage="extracting", done=0, total=None, facts=0):
+    if not job_id:
+        return                      # scripted ingest has no job row
+    conn.execute(
+        "UPDATE jobs SET stage=?, done=?, facts=?"
+        + (", total=?" if total is not None else "") + " WHERE id=?",
+        (stage, done, facts, *( (total,) if total is not None else () ), job_id))
+    conn.commit()
+```
+
+`build_relations` writes with `INSERT OR REPLACE`, relying on the unique index on
+`(fact_a, fact_b)`. It runs after every upload and re-pairs documents already
+ingested, so without that it would duplicate every existing relation each time.
 
 `build_relations` loads all facts, calls `candidate_pairs`, applies `rule_verdict`, calls
 `adjudicate` for anything not settled by rule, runs `verify` on any claimed transform,
-sets `final_verdict` (downgrading to `needs_review` when verification fails or rule and
-model disagree), and writes the `relations` row.
+sets `final_verdict`, and writes the `relations` row.
+
+There are two vocabularies and they must not be confused. `rule_verdict` is internal;
+`final_verdict` is what the API filters on, the UI groups by, and the README quotes.
+Every relation gets a `final_verdict` — most pairs never reach the model, and leaving
+theirs NULL would hide roughly three quarters of the knowledge layer behind an API
+filter that matches nothing.
+
+| rule verdict | model called? | final_verdict |
+| --- | --- | --- |
+| `corroborates` | no | `corroborates` |
+| `corroborates_with_caveat` | no | `corroborates` (caveat carried in `qualifier_diff`) |
+| `insufficient_context` | no | `insufficient_context` |
+| `unrelated` | no | `unrelated` |
+| `reconcilable` | yes | model's verdict, if `verify` confirms the claimed transform |
+| `contradiction_candidate` | yes | model's verdict |
+| `needs_model` | yes | model's verdict |
+
+Whenever the model was called, two things can override its answer:
+
+- `verify` rejects the transform it claimed → `needs_review`
+- the model contradicts the rule layer outright, for example calling a pair
+  `corroborates` when the canonical values do not agree → `needs_review`
+
+Both cases set `agreed = 0` so the disagreement is visible rather than averaged away.
+Model verdicts map straight through otherwise: `corroborates`, `contradicts`,
+`reconciled_by_context`, `unrelated`.
 
 - [ ] **Step 4: Implement api.py**
 
@@ -2128,6 +2392,12 @@ git commit -m "Add web screens for documents, facts, relations and gaps"
       `ingest` for each PDF, then `build_relations` once at the end. Print a per-document
       summary of facts found, facts rejected, and gaps.
 - [ ] **Step 2: Run it against `../starter-datasets/starter-datasets` with a real key.**
+      Ingest in a fixed, sorted order and record that order in the README. The
+      canonicalisation prompt now includes the groups already assigned, so its text —
+      and therefore its cache key — depends on what was ingested before it. A grader
+      replaying the committed cache in the same order gets cache hits; a different
+      order re-asks the question and needs a key. Extraction prompts are unaffected,
+      since a window's text does not depend on ingest order.
 - [ ] **Step 3: Confirm all four cases appear.** Query the relations table for a
       `corroborates` spanning two documents, a `contradicts`, a `reconciled_by_context`,
       and check the gaps table contains the IMF cover page.
@@ -2170,6 +2440,194 @@ git commit -m "Add README with setup, approach and the four demonstrated cases"
 ---
 
 ## Self-Review Notes
+
+### Seventh round: found by running it
+
+Milestones 3 to 5 were built, and a synthetic four-document fixture was run through the
+whole pipeline offline. Two defects surfaced that no amount of reading had caught, both
+in the reconciliation rules, and both would have produced a misleading demo.
+
+22. **A period-only difference was being sent to the model, which fabricated a
+    contradiction.** FY23 revenue paired against FY24 revenue differs in exactly one
+    qualifier, so it was classified `reconcilable` and handed over for judgement. The
+    model answered that both figures "describe the same measure over the same period"
+    - flatly untrue - and called it a contradiction. The fixture showed four such false
+    contradictions out of eleven relations. A difference that is only the period is now
+    resolved by rule as `reconciled_by_context`, with no model call: cheaper, safer, and
+    obviously correct.
+23. **Then the fix for 22 suppressed the one real contradiction.** Guarding against the
+    model claiming a contradiction whenever any qualifier differs also caught the RBI
+    versus IMF growth pair, which differs only in who published it. That is the single
+    most interesting relation in the corpus and it silently became `needs_review`.
+    Qualifiers are now split: those describing the measurement (basis, vintage, scope,
+    segment, period) bear on comparability, while provenance (source, publisher,
+    attribution) does not. Two institutions disagreeing about the same measure over the
+    same period is a contradiction, not an incomparability. Provenance is still recorded
+    and shown.
+
+After both fixes the fixture produces exactly the intended shape: one cross-document
+corroboration, one genuine contradiction, nine reconciled by context, and no false
+contradictions.
+
+The lesson is the one from rounds four and five, sharper. Every defect worth finding in
+this project came from executing something. Reading found wording; running found the
+bugs.
+
+### Sixth review round
+
+This pass audited the two documents against each other rather than re-reading either.
+Five rounds of fixes had landed in the plan without ever being carried back to the
+design, and the design is what Task 18 writes the README's Approach section from.
+
+20. **`final_verdict` was undefined for every pair the model never sees.** The plan said
+    only that it downgrades to `needs_review` on failure, and said nothing about pairs
+    settled by rule. After the round-four fix that is roughly three quarters of them.
+    The API filters on `final_verdict` and the index is built on it, so those relations
+    would have been NULL and simply invisible in the interface - most of the knowledge
+    layer present in the database and absent from the screen. Both vocabularies are now
+    written down explicitly, with a mapping table from rule verdict to final verdict.
+21. **The design document had drifted badly out of date.** It described none of the
+    hardening from rounds three to five: no deduplication, no rate-limit retry, no
+    truncation handling, no unique constraint on relations, no incremental
+    canonicalisation, no order dependency in the cache. Writing the README from it would
+    have produced an accurate-sounding description of a system that does not exist -
+    precisely the kind of thing a careful reviewer catches. Design now matches the plan,
+    including the measured numbers and the four limitations the review rounds exposed.
+
+Both documents now agree, and both agree with the code. Worth stating plainly: this pass
+found no new defects in the *code*, only in what the documents claimed about it. That is
+a signal the static review has reached its limit - the remaining unknowns need live
+model output, not more reading.
+
+### Fifth review round
+
+Three more, one of them the most consequential defect found in any pass.
+
+17. **Canonicalisation could not merge terms across separately ingested documents.**
+    `canonicalise` sends the model only the terms it has never seen, never the groups
+    it already assigned, so a term arriving with a later document cannot join an
+    existing group. Simulated end to end: the earnings deck's "revenue from services"
+    became `revenue_from_services`, the annual report's "Revenue from Operations"
+    became `revenue_from_operations`, and the two never pair. That is case 1, the
+    headline corroboration, and it silently would not have worked. It matters more
+    than the single case: documents always arrive one at a time, both through the API
+    and in the Task 17 script, so cross-document linking - the entire point of the
+    system - was broken by default. The prompt now carries the existing groups and
+    instructs the model to reuse an id when one fits.
+18. **Relations duplicated on every re-run.** `build_relations` runs after each upload
+    and re-pairs documents already ingested, but `relations` had no uniqueness
+    constraint. Uploading a third document would have doubled every relation from the
+    first two, and a fourth would have tripled them. Added a unique index on
+    `(fact_a, fact_b)`, written with `INSERT OR REPLACE` so re-running refreshes a
+    verdict instead of duplicating it. Verified idempotent over three runs.
+19. **`_bump_job` was called but never defined.** The progress writer referenced by the
+    per-window loop existed nowhere in the plan. Now specified.
+
+One consequence worth stating plainly: because the canonicalisation prompt now depends
+on what was ingested before it, its cache key does too. The committed cache therefore
+replays only if documents are ingested in the same order, which Task 17 now fixes and
+records. Extraction prompts are unaffected - a window's text does not depend on order.
+
+### Fourth review round
+
+This pass built the unwritten tasks as a throwaway harness and ran the whole pipeline
+against two real starter documents with a stubbed model. That surfaced the most serious
+problems found in any round, including a claim in the design document that was simply
+false.
+
+13. **The cost argument was wrong.** The design asserted that pairs agreeing outright
+    are settled without a model call, and that this is "most of what makes a free tier
+    workable". Measured: **0.5%** of pairs were settled by rule and **99.5% would have
+    reached the model** - 3,274 adjudications on two documents alone, which does not
+    fit any free tier. The design has been corrected rather than quietly patched.
+14. **A missing period read as a matching period.** `qualifier_diff` compares
+    `period_start` with `==`, so two undated facts looked contemporaneous and any
+    difference in their values became a contradiction. This produced **1,480 false
+    contradictions, 45% of all pairs**. An absent period now yields
+    `insufficient_context`: the pair is recorded and visible, but no relationship is
+    claimed and no quota is spent. This one fix cut adjudication calls fourfold.
+15. **Incomparable units were being compared.** A rupee figure paired with a percentage
+    whenever the metric words overlapped. Pairing now gates on canonical unit, and
+    differing units resolve to `unrelated` rather than being escalated.
+16. **`max_pairs_per_fact` was too generous.** 12 produced 3,291 pairs from 553 facts
+    with no gain in the cases that matter; 6 halves the budget. Now 6.
+
+Together these take adjudication from 3,274 pairs to 460 - a sevenfold reduction - while
+leaving all four required cases intact, since each carries an explicit period on both
+sides and is therefore untouched by the period guard.
+
+**Verified working against real documents**, not fixtures: the pipeline ingested 100 and
+27 page PDFs, stored 553 facts, and a grounding audit re-checked every stored quote
+against the text of the page it claimed. **553 of 553 were found on their claimed page**,
+which confirms the block-span fix from the first round holds on real input. Every fact
+also carried a page number and bounding box.
+
+**Left as a known limitation:** period coverage. Only 39% of facts in the harness run
+carried a parseable period. A real model should do better than the stub's regex, but the
+design must not assume high coverage, and `insufficient_context` is what keeps low
+coverage honest instead of dangerous. Worth reporting in the README as a measured number
+once the real ingest runs.
+
+### Third review round
+
+Four more, found by probing failure modes rather than the happy path:
+
+9.  **Overlapping windows produced duplicate facts that corroborated themselves.**
+    Windows overlap by design so a fact straddling a boundary is not lost, but
+    measured against the real annual report that puts 11.6% of blocks in two
+    windows. Their facts arrive twice, pair with each other, and register as
+    corroborations - the demo would show an inflated count of a sentence agreeing
+    with itself. Added `dedupe_facts`, keyed per document so the same fact in a
+    *different* document still survives, since that one is a real corroboration.
+10. **No rate-limit handling at all.** The whole design rests on the free tier,
+    yet the client had no retry, so the first 429 during a 158-call ingest would
+    abort the run. Added bounded exponential backoff on quota and transient
+    server errors. Malformed JSON is deliberately not retried: temperature is
+    zero, so the model reproduces it and retrying only burns quota.
+11. **A truncated response destroyed the whole document.** `_loads_lenient` raised
+    a bare `JSONDecodeError` that propagated out of extraction, so one over-long
+    window lost all hundred pages. It now raises a named `BadModelJSON`, the
+    output token ceiling is set explicitly so truncation is rarer, and the
+    pipeline isolates each window and records the failure instead of aborting.
+    `NoAPIKey` still propagates on purpose - that means the run cannot proceed,
+    and failing loudly beats writing an empty knowledge layer that looks like a
+    result.
+12. **A verification test asserted something that cannot happen.** It claimed a
+    scale factor of 1 on values that already agree, but such a pair never reaches
+    the model at all - the rules settle it. Rewritten around the real scenario,
+    where the text omitted the scale word and the model proposes the missing
+    hundred-fold factor.
+
+### Second review round
+
+Three further defects found by executing the plan's code, two of them silent
+corruptions:
+
+6. **Re-uploading a document returned the wrong id.** `save_document` branched on
+   `cur.lastrowid`, but an `INSERT OR IGNORE` that ignores its row still reports the
+   connection's previous successful insert. Verified: ingesting `a.pdf`, then `b.pdf`,
+   then `a.pdf` again returned id 2 for the third call instead of 1, which would file
+   one document's blocks and facts under another. Now branches on `cur.rowcount`, with
+   a regression test.
+7. **Evidence bounding boxes merged across page breaks.** A quote straddling a page
+   boundary unioned a box at the foot of one page with one at the head of the next,
+   producing a rectangle that exists on neither, and `rows[0]` picked an arbitrary page
+   because `IN (...)` does not preserve order. Now ordered, with the box confined to
+   the page the quote starts on.
+8. **`prompts.py` was missing `import json`**, which `build_adjudicate_prompt` needs;
+   and the Task 13 interface line omitted the `a_meta`/`b_meta` arguments the
+   implementation actually takes.
+
+Also hardened: SQLite now sets `busy_timeout`, because ingest writes from a background
+thread while the UI polls for progress and the reader would otherwise fail immediately
+rather than wait.
+
+Measured and found acceptable, no change made: candidate pairing is O(n^2), which runs
+in 0.39s at the ~1,250 facts the six starter documents produce and 2.2s at 3,000. It
+degrades quadratically, so the "many PDFs in one layer" extension would need the
+blocking rewritten before it scales much further.
+
+### First review round
 
 Five defects were found by executing the plan's own code rather than reading it, and
 have been fixed above:

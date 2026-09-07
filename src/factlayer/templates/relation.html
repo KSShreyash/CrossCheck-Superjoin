@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Relation {{ rel.id }}{% endblock %}
+{% block content %}
+
+{% set v = rel.final_verdict %}
+<a class="back" href="/relations">&larr; all relations</a>
+
+<h1>
+  <span class="verdict v-{{ v }}">{{ v.replace('_', ' ') }}</span>
+  {% if rel.reason_code %}<span class="reason">{{ rel.reason_code.replace('_', ' ') }}</span>{% endif %}
+</h1>
+
+<div class="sides">
+  {% for side in [rel.a, rel.b] %}
+  <section class="side">
+    <div class="src">{{ side.filename }}{% if side.evidence and side.evidence.page_no %}
+      &middot; page {{ side.evidence.page_no }}{% endif %}</div>
+    <blockquote>{{ side.evidence.quote if side.evidence else '(no quote)' }}</blockquote>
+    <dl>
+      <dt>subject</dt><dd>{{ side.subject }}</dd>
+      <dt>metric</dt><dd>{{ side.metric }}</dd>
+      <dt>as printed</dt><dd>{{ side.value_raw }} {{ side.unit_raw or '' }}</dd>
+      <dt>normalised</dt>
+      <dd>{% if side.canon_value is not none %}
+            {{ '{:,.2f}'.format(side.canon_value) }} {{ side.canon_unit }}
+          {% else %}<span class="muted">not parsed</span>{% endif %}</dd>
+      <dt>period</dt>
+      <dd>{% if side.period_start %}{{ side.period_start }} to {{ side.period_end }}
+          {% else %}<span class="muted">none detected</span>{% endif %}</dd>
+      {% for k, val in side.qualifiers.items() %}
+      <dt>{{ k }}</dt><dd>{{ val }}</dd>
+      {% endfor %}
+    </dl>
+  </section>
+  {% endfor %}
+</div>
+
+<section class="reasoning">
+  <h2>How this was decided</h2>
+
+  <div class="step">
+    <span class="label">Rule layer</span>
+    <span class="val">{{ rel.rule_verdict.replace('_', ' ') }}</span>
+    <p>
+      {% if rel.qualifier_diff %}
+        Differing attributes: {% for k in rel.qualifier_diff %}<code>{{ k }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+      {% else %}
+        No recorded attribute differs between the two facts.
+      {% endif %}
+    </p>
+  </div>
+
+  {% if rel.model_verdict %}
+  <div class="step">
+    <span class="label">Model</span>
+    <span class="val">{{ rel.model_verdict.replace('_', ' ') }}</span>
+    <p>{{ rel.explanation }}</p>
+    {% if rel.claimed_transform %}
+    <p class="muted">Claimed transformation: <code>{{ rel.claimed_transform }}</code></p>
+    {% endif %}
+  </div>
+
+  <div class="step">
+    <span class="label">Verification</span>
+    {% if rel.verified == 1 %}
+      <span class="val ok">transformation re-derived and confirmed</span>
+    {% elif rel.verified == 0 %}
+      <span class="val bad">claim did not survive checking</span>
+    {% else %}
+      <span class="val muted">nothing quantitative to re-derive</span>
+    {% endif %}
+    <p>
+      {% if rel.agreed == 0 %}
+        The rule layer and the model disagree, so this pair is held for review
+        rather than resolved. Both readings are recorded above.
+      {% else %}
+        The rule layer and the model agree.
+      {% endif %}
+    </p>
+  </div>
+  {% else %}
+  <div class="step">
+    <span class="label">Model</span>
+    <span class="val muted">not consulted</span>
+    <p>
+      {% if v == 'insufficient_context' %}
+        At least one of these facts carries no period, so they cannot be shown to
+        describe the same thing. Calling this a contradiction would be an
+        unsupported claim, so the pair is recorded and left open.
+      {% else %}
+        The rules settled this pair on their own, so no model call was spent.
+      {% endif %}
+    </p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

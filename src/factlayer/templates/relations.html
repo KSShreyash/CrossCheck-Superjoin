@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Relations{% endblock %}
+{% block content %}
+<h1>Relations</h1>
+
+<nav class="verdict-filter">
+  <a href="/relations" class="{{ 'on' if not type }}">all</a>
+  {% for name, count in stats.verdicts.items() %}
+  <a href="/relations?type={{ name }}" class="verdict v-{{ name }} {{ 'on' if type == name }}">
+    {{ name.replace('_', ' ') }} <b>{{ count }}</b>
+  </a>
+  {% endfor %}
+</nav>
+
+<table>
+  <thead>
+    <tr><th>Verdict</th><th>Fact A</th><th>Fact B</th><th>Why</th><th></th></tr>
+  </thead>
+  <tbody>
+  {% for r in relations %}
+    <tr>
+      <td><span class="verdict v-{{ r.final_verdict }}">{{ r.final_verdict.replace('_', ' ') }}</span></td>
+      <td>
+        <div>{{ r.a_metric }}</div>
+        <div class="num">{{ r.a_value }} <span class="muted">{{ r.a_unit or '' }}</span>
+          {% if r.a_period %}<span class="muted">&middot; {{ r.a_period }}</span>{% endif %}</div>
+        <div class="src">{{ r.a_doc }}</div>
+      </td>
+      <td>
+        <div>{{ r.b_metric }}</div>
+        <div class="num">{{ r.b_value }} <span class="muted">{{ r.b_unit or '' }}</span>
+          {% if r.b_period %}<span class="muted">&middot; {{ r.b_period }}</span>{% endif %}</div>
+        <div class="src">{{ r.b_doc }}</div>
+      </td>
+      <td class="why">
+        {% if r.reason_code %}<code>{{ r.reason_code }}</code>{% endif %}
+        {% if r.agreed == 0 %}<span class="warn">rule and model disagree</span>{% endif %}
+      </td>
+      <td><a href="/relations/{{ r.id }}">inspect</a></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">No relations yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Facts{% endblock %}
+{% block content %}
+<h1>Facts</h1>
+
+<form class="filters" method="get" action="/facts">
+  <input type="search" name="q" value="{{ q }}" placeholder="subject, metric or quote">
+  <select name="doc">
+    <option value="">every document</option>
+    {% for d in documents %}
+    <option value="{{ d.id }}" {% if doc == d.id %}selected{% endif %}>{{ d.filename }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">Filter</button>
+</form>
+
+<table>
+  <thead>
+    <tr><th>Subject</th><th>Metric</th><th class="num">As printed</th>
+        <th class="num">Normalised</th><th>Period</th><th>Qualifiers</th><th>Source</th></tr>
+  </thead>
+  <tbody>
+  {% for f in facts %}
+    <tr>
+      <td>{{ f.subject }}</td>
+      <td>{{ f.metric }}</td>
+      <td class="num">{{ f.value_raw }} <span class="muted">{{ f.unit_raw or '' }}</span></td>
+      <td class="num">
+        {% if f.canon_value is not none %}{{ '{:,.2f}'.format(f.canon_value) }}
+          <span class="muted">{{ f.canon_unit }}</span>
+        {% else %}<span class="muted">-</span>{% endif %}
+      </td>
+      <td>{% if f.period_start %}{{ f.period_start }}<span class="muted"> to </span>{{ f.period_end }}
+          {% else %}<span class="muted">none</span>{% endif %}</td>
+      <td class="quals">{{ f.qualifiers }}</td>
+      <td class="src">{{ f.filename }}{% if f.page_no %} p{{ f.page_no }}{% endif %}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="muted">No facts match.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
