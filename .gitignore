@@ -12,3 +12,6 @@ uploads/
 
 # the starter response cache ships so the project runs without an API key
 !cache/starter_cache.sqlite
+*.egg-info/
+build/
+dist/
