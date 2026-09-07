@@ -9,3 +9,6 @@ venv/
 uploads/
 .pytest_cache/
 .DS_Store
+
+# the starter response cache ships so the project runs without an API key
+!cache/starter_cache.sqlite

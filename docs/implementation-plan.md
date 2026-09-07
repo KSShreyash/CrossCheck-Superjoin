@@ -149,7 +149,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 @dataclass(frozen=True)
 class Settings:
-    db_path: Path = ROOT / "factlayer.sqlite"
+    # FACTLAYER_DB lets tests and deployments point at a different file
+    db_path: Path = Path(os.getenv("FACTLAYER_DB", ROOT / "factlayer.sqlite"))
     upload_dir: Path = ROOT / "uploads"
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY")
     model: str = os.getenv("FACTLAYER_MODEL", "gemini-2.0-flash")
@@ -184,6 +185,10 @@ class Window:
     index: int
     text: str
     block_ids: list[int]
+    # char span of each block inside `text`, parallel to block_ids.
+    # Recorded at build time because block text contains its own newlines,
+    # so splitting the window on "\n" does not recover block boundaries.
+    block_spans: list[tuple[int, int]] = field(default_factory=list)
     density: float = 0.0
 
 @dataclass
@@ -207,6 +212,8 @@ class Fact:
     period_kind: str | None = None
     entity_id: str | None = None
     metric_id: str | None = None
+    # char span of evidence_quote inside its window, set during extraction
+    span: tuple[int, int] | None = None
 ```
 
 - [ ] **Step 6: Write db.py**
@@ -542,6 +549,19 @@ def test_boilerplate_blocks_are_excluded():
 def test_density_prefers_numeric_text():
     assert density_score("Revenue from operations was 81,415.38 million in FY24") > \
            density_score("The board places on record its appreciation")
+
+def test_block_spans_survive_newlines_inside_a_block():
+    # PDF blocks carry their own newlines, so window.text.split("\n") does NOT
+    # recover block boundaries. Spans must be recorded when the window is built.
+    a = Block(1, 0, "Revenue from operations\nwas 81,415.38 million", (0, 0, 1, 1))
+    b = Block(1, 1, "Unrelated text", (0, 0, 1, 1))
+    w = build_windows([a, b], doc_id=1, window_chars=10_000, overlap=0)[0]
+    assert len(w.block_spans) == 2
+    start, end = w.block_spans[0]
+    assert w.text[start:end] == a.text
+    quote = "81,415.38 million"
+    at = w.text.index(quote)
+    assert start <= at and at + len(quote) <= end   # quote belongs to block 0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -569,6 +589,16 @@ def density_score(text: str) -> float:
     p = len(_PERIODISH.findall(text))
     return (n + 2 * u + 2 * p) / max(len(text) / 200.0, 1.0)
 
+def _emit(doc_id: int, index: int, ids: list[int], parts: list[str]) -> Window:
+    """Join blocks and record where each one lands in the joined text."""
+    spans, cursor = [], 0
+    for part in parts:
+        spans.append((cursor, cursor + len(part)))
+        cursor += len(part) + 1          # +1 for the "\n" inserted by join
+    text = "\n".join(parts)
+    return Window(doc_id=doc_id, index=index, text=text, block_ids=list(ids),
+                  block_spans=spans, density=density_score(text))
+
 def build_windows(blocks: list[Block], doc_id: int, window_chars: int,
                   overlap: int) -> list[Window]:
     usable = [(i, b) for i, b in enumerate(blocks) if not b.is_boilerplate]
@@ -581,9 +611,7 @@ def build_windows(blocks: list[Block], doc_id: int, window_chars: int,
         nonlocal cur_ids, cur_parts, cur_len
         if not cur_parts:
             return
-        text = "\n".join(cur_parts)
-        windows.append(Window(doc_id=doc_id, index=len(windows), text=text,
-                              block_ids=list(cur_ids), density=density_score(text)))
+        windows.append(_emit(doc_id, len(windows), cur_ids, cur_parts))
         keep, kept_len = [], 0
         for idx, part in zip(reversed(cur_ids), reversed(cur_parts)):
             if kept_len >= overlap:
@@ -602,16 +630,14 @@ def build_windows(blocks: list[Block], doc_id: int, window_chars: int,
         cur_parts.append(b.text)
         cur_len += len(b.text)
     if cur_parts:
-        text = "\n".join(cur_parts)
-        windows.append(Window(doc_id=doc_id, index=len(windows), text=text,
-                              block_ids=list(cur_ids), density=density_score(text)))
+        windows.append(_emit(doc_id, len(windows), cur_ids, cur_parts))
     return windows
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_segment.py -v`
-Expected: 3 passed
+Expected: 4 passed
 
 - [ ] **Step 5: Commit**
 
@@ -751,7 +777,7 @@ def values_agree(a: float | None, b: float | None, tol: float) -> bool:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_units.py -v`
-Expected: 11 passed
+Expected: 12 passed
 
 - [ ] **Step 5: Commit**
 
@@ -1189,7 +1215,6 @@ def extract_facts(client, window: Window, doc_id: int
     return accepted, rejected
 ```
 
-Add `span: tuple[int, int] | None = None` to the `Fact` dataclass in `models.py`.
 
 - [ ] **Step 5: Run tests to verify they pass**
 
@@ -1225,20 +1250,47 @@ from factlayer.db import connect, init_schema
 from factlayer.models import Block, Fact, Window
 from factlayer.store import save_document, save_blocks, save_fact
 
+import pytest
+from factlayer.ingest.segment import build_windows
+
+def _save(conn, blocks):
+    doc_id = save_document(conn, "sha", "t.pdf", "Test", 2)
+    ids = save_blocks(conn, doc_id, blocks)
+    window = build_windows(blocks, doc_id, window_chars=10_000, overlap=0)[0]
+    return doc_id, ids, window
+
+def _fact_at(doc_id, window, quote):
+    fact = Fact(doc_id, "Co", "revenue", "81,415.38", None, "million", "FY24")
+    fact.evidence_quote = quote
+    at = window.text.index(quote)
+    fact.span = (at, at + len(quote))
+    return fact
+
 def test_fact_evidence_resolves_to_page_and_bbox(tmp_path):
     conn = connect(tmp_path / "t.sqlite"); init_schema(conn)
-    doc_id = save_document(conn, "sha", "t.pdf", "Test", 2)
     blocks = [Block(1, 0, "Revenue was 81,415.38 million", (10, 20, 300, 40)),
-              Block(2, 0, "Unrelated text", (10, 20, 300, 40))]
-    ids = save_blocks(conn, doc_id, blocks)
-    window = Window(doc_id, 0, "\n".join(b.text for b in blocks), [0, 1])
-    fact = Fact(doc_id, "Co", "revenue", "81,415.38", None, "million", "FY24")
-    fact.evidence_quote = "81,415.38 million"
-    fact.span = (window.text.index("81,415.38"),
-                 window.text.index("81,415.38") + len("81,415.38 million"))
-    fact_id = save_fact(conn, fact, window, ids)
+              Block(2, 0, "Unrelated text", (11, 21, 301, 41))]
+    doc_id, ids, window = _save(conn, blocks)
+    fact_id = save_fact(conn, _fact_at(doc_id, window, "81,415.38 million"), window, ids)
     row = conn.execute("SELECT * FROM evidence WHERE fact_id=?", (fact_id,)).fetchone()
     assert row["page_no"] == 1
+    assert row["x0"] == 10 and row["y1"] == 40
+
+@pytest.mark.parametrize("first", [
+    "Revenue was 81,415.38 million",                      # single line
+    "Revenue from operations\nwas 81,415.38 million",      # newline inside block
+    "Revenue\nfrom operations\nwas 81,415.38 million",     # several newlines
+])
+def test_evidence_page_is_correct_when_blocks_contain_newlines(tmp_path, first):
+    # Guards the misattribution bug: splitting window.text on "\n" credits the
+    # quote to a block on the wrong page, silently corrupting the evidence trail.
+    conn = connect(tmp_path / "t.sqlite"); init_schema(conn)
+    blocks = [Block(1, 0, first, (10, 20, 300, 40)),
+              Block(2, 0, "Unrelated text", (11, 21, 301, 41))]
+    doc_id, ids, window = _save(conn, blocks)
+    fact_id = save_fact(conn, _fact_at(doc_id, window, "81,415.38 million"), window, ids)
+    row = conn.execute("SELECT * FROM evidence WHERE fact_id=?", (fact_id,)).fetchone()
+    assert row["page_no"] == 1, "quote came from page 1, not the following block"
     assert row["x0"] == 10 and row["y1"] == 40
 ```
 
@@ -1274,15 +1326,14 @@ def save_blocks(conn, doc_id: int, blocks: list[Block]) -> list[int]:
     return ids
 
 def _blocks_covering(window: Window, span: tuple[int, int]) -> list[int]:
-    """Which window block positions the span falls inside."""
-    out, cursor = [], 0
-    for pos, _ in enumerate(window.block_ids):
-        segment = window.text.split("\n")[pos] if pos < len(window.text.split("\n")) else ""
-        start, end = cursor, cursor + len(segment)
-        if span[0] < end and span[1] > start:
-            out.append(pos)
-        cursor = end + 1
-    return out
+    """Window block positions the span overlaps, using recorded spans.
+
+    Do not derive these by splitting window.text on newlines: block text
+    contains its own newlines, so the split silently misattributes the quote
+    to a later block and reports the wrong page and bounding box.
+    """
+    return [pos for pos, (start, end) in enumerate(window.block_spans)
+            if span[0] < end and span[1] > start]
 
 def save_fact(conn, fact: Fact, window: Window, block_row_ids: list[int]) -> int:
     cur = conn.execute(
@@ -1331,7 +1382,7 @@ def save_rejected(conn, doc_id: int, rejected: list[dict]) -> None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_store.py -v`
-Expected: 1 passed
+Expected: 4 passed
 
 - [ ] **Step 5: Commit**
 
@@ -1743,7 +1794,7 @@ def test_true_scale_claim_is_confirmed():
 def test_false_scale_claim_is_rejected():
     ok, note = verify(_f(7.454082e10), _f(8.141538e10),
                       {"kind": "scale", "factor": 1}, tol=1e-3)
-    assert not ok and "does not reconcile" in note
+    assert not ok and "do not reconcile" in note
 
 def test_basis_claim_requires_basis_to_actually_differ():
     ok, _ = verify(_f(7.4e10, {"basis": "standalone"}),
@@ -1877,7 +1928,7 @@ def adjudicate(client, a, b, rule_verdict: str, diff: dict,
 - [ ] **Step 6: Run tests to verify they pass**
 
 Run: `pytest tests/test_verify.py -v`
-Expected: 5 passed
+Expected: 4 passed
 
 - [ ] **Step 7: Commit**
 
@@ -1976,6 +2027,29 @@ Routes exactly as listed in `docs/design.md`. Upload writes the file to
 `settings.upload_dir`, creates a `jobs` row, and runs `ingest` then `build_relations` in
 a `BackgroundTasks` callback. Every read route returns plain JSON built from SQL joins.
 
+Resolve the database per request rather than binding it at import, or the API tests
+cannot redirect it — `settings` is a module-level singleton evaluated once at import
+time, so a `monkeypatch.setenv` that lands after the first import would be ignored:
+
+```python
+import os, functools
+from .config import settings
+from .db import connect, init_schema
+
+@functools.lru_cache(maxsize=8)
+def _conn_for(path: str):
+    conn = connect(path)
+    init_schema(conn)
+    return conn
+
+def get_conn():
+    return _conn_for(os.getenv("FACTLAYER_DB", str(settings.db_path)))
+```
+
+Upload must reject anything that is not a PDF with HTTP 400, by both content type and
+magic bytes (`%PDF`), since the test asserts that and a mislabelled upload would
+otherwise crash the ingest worker.
+
 - [ ] **Step 5: Write the API test**
 
 ```python
@@ -2060,7 +2134,7 @@ git commit -m "Add web screens for documents, facts, relations and gaps"
 - [ ] **Step 4: Commit the populated cache** so the project runs without a key.
 
 ```bash
-git add scripts/ingest_starter.py cache/starter_cache.sqlite
+git add scripts/ingest_starter.py cache/starter_cache.sqlite   # .gitignore negates this path
 git commit -m "Ingest starter documents and commit the response cache"
 ```
 
@@ -2096,6 +2170,38 @@ git commit -m "Add README with setup, approach and the four demonstrated cases"
 ---
 
 ## Self-Review Notes
+
+Five defects were found by executing the plan's own code rather than reading it, and
+have been fixed above:
+
+1. **Evidence was attributed to the wrong block.** `_blocks_covering` recovered block
+   boundaries by splitting the window on newlines, but PDF block text contains its own
+   newlines. Verified: with a two-line block, the quote was credited to the *following*
+   block, giving the wrong page and bounding box. The plan's original test passed
+   because its fixture blocks were single-line. `Window.block_spans` now records
+   boundaries at build time, and `tests/test_store.py` parametrises over multi-line
+   blocks so the bug cannot return.
+2. **`.gitignore` blocked the response cache.** `*.sqlite` matched
+   `cache/starter_cache.sqlite`, so Task 17 would have appeared to succeed while
+   committing nothing — silently breaking the run-without-a-key path the brief requires.
+   A negation now exempts that one file; stray working databases stay ignored.
+3. **Task 13's assertion never matched its own message.** The test looked for "does not
+   reconcile" against a message reading "do not reconcile".
+4. **`FACTLAYER_DB` was read by the API tests but never by `config.py`,** so the tests
+   would have written to the real database. Config now reads it, and the API resolves
+   its connection per request instead of at import.
+5. **Two wrong expected-test counts** (Task 5 said 11, actual 12; Task 13 said 5, actual
+   4), plus a stale "add this field" note left over from an earlier revision.
+
+The units and periods suites in Tasks 5 and 6 were executed as written: 12 passed and
+12 passed respectively, including the crore-to-million reconciliation that case 1
+depends on and the `FY2025/26` equals `FY26` equivalence that case 3 depends on.
+
+Known and accepted: Tasks 15 and 16 specify prose plus interface contracts rather than
+complete code for the FastAPI routes and Jinja templates. That is a deviation from the
+"no placeholders" rule. It is acceptable here only because the same session that wrote
+this plan is executing it and holds the full context; a cold executor would need those
+two tasks expanded first.
 
 Checked against `docs/design.md`:
 
