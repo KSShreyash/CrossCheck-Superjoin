@@ -1,0 +1,17 @@
+Metadata-Version: 2.4
+Name: factlayer
+Version: 0.1.0
+Summary: Extract grounded facts from PDFs and reconcile them across documents
+Requires-Python: >=3.11
+Requires-Dist: fastapi>=0.110
+Requires-Dist: uvicorn[standard]>=0.29
+Requires-Dist: jinja2>=3.1
+Requires-Dist: python-multipart>=0.0.9
+Requires-Dist: pymupdf>=1.24
+Requires-Dist: google-generativeai>=0.5
+Requires-Dist: python-dotenv>=1.0
+Requires-Dist: numpy>=1.26
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: httpx>=0.27; extra == "dev"
+Requires-Dist: reportlab>=4.0; extra == "dev"
