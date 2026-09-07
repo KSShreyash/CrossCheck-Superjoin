@@ -2257,8 +2257,33 @@ ingested, so without that it would duplicate every existing relation each time.
 
 `build_relations` loads all facts, calls `candidate_pairs`, applies `rule_verdict`, calls
 `adjudicate` for anything not settled by rule, runs `verify` on any claimed transform,
-sets `final_verdict` (downgrading to `needs_review` when verification fails or rule and
-model disagree), and writes the `relations` row.
+sets `final_verdict`, and writes the `relations` row.
+
+There are two vocabularies and they must not be confused. `rule_verdict` is internal;
+`final_verdict` is what the API filters on, the UI groups by, and the README quotes.
+Every relation gets a `final_verdict` — most pairs never reach the model, and leaving
+theirs NULL would hide roughly three quarters of the knowledge layer behind an API
+filter that matches nothing.
+
+| rule verdict | model called? | final_verdict |
+| --- | --- | --- |
+| `corroborates` | no | `corroborates` |
+| `corroborates_with_caveat` | no | `corroborates` (caveat carried in `qualifier_diff`) |
+| `insufficient_context` | no | `insufficient_context` |
+| `unrelated` | no | `unrelated` |
+| `reconcilable` | yes | model's verdict, if `verify` confirms the claimed transform |
+| `contradiction_candidate` | yes | model's verdict |
+| `needs_model` | yes | model's verdict |
+
+Whenever the model was called, two things can override its answer:
+
+- `verify` rejects the transform it claimed → `needs_review`
+- the model contradicts the rule layer outright, for example calling a pair
+  `corroborates` when the canonical values do not agree → `needs_review`
+
+Both cases set `agreed = 0` so the disagreement is visible rather than averaged away.
+Model verdicts map straight through otherwise: `corroborates`, `contradicts`,
+`reconciled_by_context`, `unrelated`.
 
 - [ ] **Step 4: Implement api.py**
 
@@ -2415,6 +2440,32 @@ git commit -m "Add README with setup, approach and the four demonstrated cases"
 ---
 
 ## Self-Review Notes
+
+### Sixth review round
+
+This pass audited the two documents against each other rather than re-reading either.
+Five rounds of fixes had landed in the plan without ever being carried back to the
+design, and the design is what Task 18 writes the README's Approach section from.
+
+20. **`final_verdict` was undefined for every pair the model never sees.** The plan said
+    only that it downgrades to `needs_review` on failure, and said nothing about pairs
+    settled by rule. After the round-four fix that is roughly three quarters of them.
+    The API filters on `final_verdict` and the index is built on it, so those relations
+    would have been NULL and simply invisible in the interface - most of the knowledge
+    layer present in the database and absent from the screen. Both vocabularies are now
+    written down explicitly, with a mapping table from rule verdict to final verdict.
+21. **The design document had drifted badly out of date.** It described none of the
+    hardening from rounds three to five: no deduplication, no rate-limit retry, no
+    truncation handling, no unique constraint on relations, no incremental
+    canonicalisation, no order dependency in the cache. Writing the README from it would
+    have produced an accurate-sounding description of a system that does not exist -
+    precisely the kind of thing a careful reviewer catches. Design now matches the plan,
+    including the measured numbers and the four limitations the review rounds exposed.
+
+Both documents now agree, and both agree with the code. Worth stating plainly: this pass
+found no new defects in the *code*, only in what the documents claimed about it. That is
+a signal the static review has reached its limit - the remaining unknowns need live
+model output, not more reading.
 
 ### Fifth review round
 

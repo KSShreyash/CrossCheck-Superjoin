@@ -105,6 +105,23 @@ facts permanently, and a fact never extracted can never be reconciled.
 
 Every call is cached under `sha256(model + prompt_version + window_text)`.
 
+**Duplicates.** Windows overlap so a fact spanning a boundary is not lost, which puts
+about a tenth of blocks — 11.6%, measured on the annual report — into two windows. Their
+facts arrive twice. Left alone the twins pair with each other and register as
+corroborations, so the system would report a sentence agreeing with itself. Facts are
+therefore deduplicated per document on subject, metric, value, period and normalised
+quote. The key is per document deliberately: the same fact in a *different* document is
+the cross-document corroboration we are looking for.
+
+**Failure handling.** Three things go wrong in practice and each is contained rather
+than fatal. A free-tier quota error or a transient server error is retried with bounded
+backoff. A malformed or truncated response raises a named error and costs that one
+window, not the document — a bare parse error propagating out of extraction would
+otherwise discard a hundred pages of work. Malformed JSON is deliberately not retried:
+temperature is zero, so the model reproduces it and retrying only burns quota. A missing
+API key with nothing cached is the one case that stops the run, because failing loudly
+beats writing an empty knowledge layer that looks like a result.
+
 ### 2. Normalisation
 
 Deterministic, pure, and the most heavily tested part of the codebase. Four normalisers:
@@ -123,6 +140,19 @@ Deterministic, pure, and the most heavily tested part of the codebase. Four norm
   and "Revenue from Operations" become comparable without either being hard-coded.
 
 Clustering is derived from the ingested corpus, so no alias list ships with the code.
+
+Documents arrive one at a time, so clustering has to be incremental, and the naive
+version of that is quietly broken. If the model is shown only the terms it has not seen
+before, a metric arriving with the second document cannot join a group created by the
+first: "revenue from services" becomes one canonical id, "Revenue from Operations"
+becomes another, and the two never pair. That is the headline corroboration failing
+silently. The prompt therefore carries the groups already assigned and asks the model to
+reuse an id when one fits.
+
+The cost is a small order dependency: because that prompt reflects what was ingested
+before it, so does its cache key. The committed cache replays only if documents are
+ingested in the recorded order. Extraction is unaffected, since a window's text does not
+depend on what came earlier.
 
 ### 3. Pairing
 
@@ -161,6 +191,23 @@ period on both sides.
 `insufficient_context` is a real answer rather than a failure. The pair is stored and
 visible, the system simply declines to claim a relationship it cannot support.
 
+Two vocabularies exist and they are easy to confuse. The verdicts above are internal to
+the rule layer. What the API filters on, the UI groups by, and this document quotes is a
+single `final_verdict` per relation:
+
+| `final_verdict` | meaning |
+| --- | --- |
+| `corroborates` | the two facts agree, by rule or confirmed by the model |
+| `contradicts` | comparable facts that genuinely disagree |
+| `reconciled_by_context` | they differ, and a named difference explains it |
+| `insufficient_context` | not enough qualifiers to say anything honestly |
+| `unrelated` | not about the same measurement |
+| `needs_review` | rule and model disagree, or a claimed transform failed to verify |
+
+Every relation carries one. Roughly three quarters never reach the model, so leaving
+their verdict unset would hide most of the knowledge layer behind a filter matching
+nothing.
+
 Attribute facts always go to the model, because "was a director" versus "resigned with
 effect from 1 July 2024" is a judgement about time and status that arithmetic cannot
 make.
@@ -183,10 +230,16 @@ the natural place to point during the failure-case discussion.
 
 ### 6. Storage
 
-SQLite, one file. Tables: `documents`, `blocks`, `facts`, `evidence`, `entities`,
-`metrics`, `relations`, `llm_cache`, `rejected_facts`, `jobs`. Embeddings are float32
+SQLite, one file. Tables: `documents`, `blocks`, `facts`, `evidence`, `canon_terms`,
+`relations`, `llm_cache`, `rejected_facts`, `gaps`, `jobs`. Embeddings are float32
 BLOBs compared with numpy; at a few thousand facts brute-force cosine is sub-millisecond
 and needs no extra service.
+
+Two constraints carry weight. Documents are keyed by content hash, so re-uploading a
+file is a no-op rather than a second copy. Relations are unique on their fact pair,
+because relation building runs after every upload and re-pairs documents already
+ingested — without that, a third document would double every relation from the first
+two. Re-running refreshes a verdict instead of duplicating it.
 
 No graph database. Relations are one table with two foreign keys, the queries are joins,
 and the brief is explicit that a graph store is not itself the answer. SQLite also means
@@ -204,7 +257,7 @@ GET  /api/documents           list with counts
 GET  /api/documents/{id}/gaps pages we could not read, and why
 GET  /api/facts               filter by entity, metric, period, document, free text
 GET  /api/facts/{id}          fact, evidence, bbox, related facts
-GET  /api/relations           filter by type, including needs_review
+GET  /api/relations           filter by final_verdict (see below)
 GET  /api/relations/{id}      both sides, both quotes, rule verdict, model explanation
 GET  /api/stats               header counts
 ```
@@ -252,6 +305,19 @@ must not block evaluation.
 - **Recall is unmeasured.** There is no labelled ground truth for these documents, so we
   can say every stored fact is grounded, but not what fraction of the facts present were
   found.
+- **Period coverage limits how much can be said.** A fact without a parseable period can
+  never be part of a contradiction, by design. In a dry run over two starter documents
+  only 39% of facts carried one, which put most pairs in `insufficient_context`. A real
+  extraction should do better than that dry run's crude stand-in, but the honest number
+  belongs in the README once the real ingest has run, because it bounds how much of the
+  corpus the system can reason about at all.
+- **Pairing is quadratic.** 0.39s at the ~1,250 facts the starter set produces and 2.2s
+  at 3,000, so it is a non-issue here, but the blocking would need rewriting before the
+  "many documents in one layer" extension.
+- **Cache replay depends on ingest order.** Canonicalisation is incremental, so its
+  prompt — and therefore its cache key — reflects what was ingested before it. The
+  committed cache replays in the recorded order; a different order re-asks those
+  questions and needs a key.
 
 ## Cases to demonstrate
 
