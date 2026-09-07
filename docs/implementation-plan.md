@@ -1720,6 +1720,11 @@ def candidate_pairs(facts: list[Fact], max_per_fact: int) -> list[tuple[int, int
         if facts[a].entity_id and facts[b].entity_id and \
            facts[a].entity_id != facts[b].entity_id:
             return
+        # incomparable units are noise, not disagreement: without this gate a
+        # rupee figure pairs with a percentage purely on shared metric words
+        if facts[a].canon_unit and facts[b].canon_unit and \
+           facts[a].canon_unit != facts[b].canon_unit:
+            return
         scored[(a, b)] = max(scored.get((a, b), 0.0), score)
 
     for members in by_metric.values():
@@ -1820,6 +1825,30 @@ def test_attribute_facts_always_go_to_the_model():
     v, _ = rule_verdict(_f(None, None, claim="attribute"),
                         _f(None, None, claim="attribute"), tol=1e-3)
     assert v == "needs_model"
+
+def test_unknown_period_is_not_a_contradiction():
+    # An absent period means unknown, not 'same period as the other fact'.
+    # Treating None == None as a match manufactured 1,480 false contradictions
+    # across two starter documents (45% of all pairs).
+    a = _f(8.1e10, period=(None, None))
+    b = _f(7.2e10, period=(None, None))
+    verdict, _ = rule_verdict(a, b, tol=1e-3)
+    assert verdict == 'insufficient_context'
+
+def test_one_known_period_is_still_insufficient():
+    a = _f(8.1e10)
+    b = _f(7.2e10, period=(None, None))
+    assert rule_verdict(a, b, tol=1e-3)[0] == 'insufficient_context'
+
+def test_incomparable_units_are_unrelated_not_disputed():
+    a, b = _f(8.1e10, 'INR'), _f(6.5, 'PERCENT')
+    assert rule_verdict(a, b, tol=1e-3)[0] == 'unrelated'
+
+def test_known_periods_still_reach_a_contradiction():
+    # the RBI vs IMF growth case must survive the guard above
+    a = _f(6.5, 'PERCENT', period=('2025-04-01', '2026-03-31'))
+    b = _f(6.6, 'PERCENT', period=('2025-04-01', '2026-03-31'))
+    assert rule_verdict(a, b, tol=1e-3)[0] == 'contradiction_candidate'
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1852,9 +1881,19 @@ def rule_verdict(a: Fact, b: Fact, tol: float) -> tuple[str, dict]:
        or a.canon_value is None or b.canon_value is None:
         return "needs_model", diff
     if a.canon_unit != b.canon_unit:
-        return "needs_model", diff
+        # a rupee figure and a percentage are not in disagreement
+        return "unrelated", diff
     if values_agree(a.canon_value, b.canon_value, tol):
         return ("corroborates" if not diff else "corroborates_with_caveat"), diff
+
+    # Values differ. Calling that a contradiction asserts the two facts are
+    # comparable, and that cannot be asserted without knowing both periods.
+    # An absent period is unknown, NOT "the same period as the other one":
+    # treating None == None as a match manufactured 1,480 false contradictions
+    # across two starter documents, 45% of all pairs.
+    if a.period_start is None or b.period_start is None:
+        return "insufficient_context", diff
+
     if len(diff) == 1:
         return "reconcilable", diff
     if not diff:
@@ -1865,7 +1904,7 @@ def rule_verdict(a: Fact, b: Fact, tol: float) -> tuple[str, dict]:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_rules.py -v`
-Expected: 6 passed
+Expected: 10 passed
 
 - [ ] **Step 5: Commit**
 
@@ -2317,6 +2356,46 @@ git commit -m "Add README with setup, approach and the four demonstrated cases"
 ---
 
 ## Self-Review Notes
+
+### Fourth review round
+
+This pass built the unwritten tasks as a throwaway harness and ran the whole pipeline
+against two real starter documents with a stubbed model. That surfaced the most serious
+problems found in any round, including a claim in the design document that was simply
+false.
+
+13. **The cost argument was wrong.** The design asserted that pairs agreeing outright
+    are settled without a model call, and that this is "most of what makes a free tier
+    workable". Measured: **0.5%** of pairs were settled by rule and **99.5% would have
+    reached the model** - 3,274 adjudications on two documents alone, which does not
+    fit any free tier. The design has been corrected rather than quietly patched.
+14. **A missing period read as a matching period.** `qualifier_diff` compares
+    `period_start` with `==`, so two undated facts looked contemporaneous and any
+    difference in their values became a contradiction. This produced **1,480 false
+    contradictions, 45% of all pairs**. An absent period now yields
+    `insufficient_context`: the pair is recorded and visible, but no relationship is
+    claimed and no quota is spent. This one fix cut adjudication calls fourfold.
+15. **Incomparable units were being compared.** A rupee figure paired with a percentage
+    whenever the metric words overlapped. Pairing now gates on canonical unit, and
+    differing units resolve to `unrelated` rather than being escalated.
+16. **`max_pairs_per_fact` was too generous.** 12 produced 3,291 pairs from 553 facts
+    with no gain in the cases that matter; 6 halves the budget. Now 6.
+
+Together these take adjudication from 3,274 pairs to 460 - a sevenfold reduction - while
+leaving all four required cases intact, since each carries an explicit period on both
+sides and is therefore untouched by the period guard.
+
+**Verified working against real documents**, not fixtures: the pipeline ingested 100 and
+27 page PDFs, stored 553 facts, and a grounding audit re-checked every stored quote
+against the text of the page it claimed. **553 of 553 were found on their claimed page**,
+which confirms the block-span fix from the first round holds on real input. Every fact
+also carried a page number and bounding box.
+
+**Left as a known limitation:** period coverage. Only 39% of facts in the harness run
+carried a parseable period. A real model should do better than the stub's regex, but the
+design must not assume high coverage, and `insufficient_context` is what keeps low
+coverage honest instead of dangerous. Worth reporting in the README as a measured number
+once the real ingest runs.
 
 ### Third review round
 

@@ -21,7 +21,9 @@ class Settings:
     window_overlap: int = 1200
     boilerplate_min_pages: int = 4       # repeats on >= N pages -> boilerplate
     gap_min_chars: int = 120             # below this on a full page -> gap
-    max_pairs_per_fact: int = 12
+    # 12 produced 3,291 pairs from 553 facts on two starter documents with no
+    # gain in the cases that matter; 6 halves the adjudication budget
+    max_pairs_per_fact: int = 6
 
 
 settings = Settings()

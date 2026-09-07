@@ -140,18 +140,30 @@ reconciliation case in the whole starter set.
 The rule layer runs first and computes, for each pair, which qualifiers differ and
 whether the canonical values agree within tolerance. That yields a provisional verdict:
 
-| Values | Qualifiers | Verdict |
-| --- | --- | --- |
-| agree | none differ | corroborates — decided by rule, no model call |
-| agree | some differ | corroborates with caveat |
-| differ | exactly one differs | reconcilable — model explains and confirms or denies |
-| differ | none differ | contradiction candidate — model adjudicates |
-| non-numeric | — | model adjudicates |
+| Values | Periods | Qualifiers | Verdict |
+| --- | --- | --- | --- |
+| agree | any | none differ | corroborates — by rule, no model call |
+| agree | any | some differ | corroborates with caveat — by rule |
+| differ | either unknown | any | insufficient context — recorded, no model call |
+| differ | both known | exactly one differs | reconcilable — model explains |
+| differ | both known | none differ | contradiction candidate — model adjudicates |
+| different units | any | any | unrelated — no model call |
+| non-numeric | any | any | model adjudicates |
 
-Pairs that agree outright are settled without a model call, which is most of what makes a
-free tier workable. Attribute facts always go to the model, because "was a director" versus
-"resigned with effect from 1 July 2024" is a judgement about time and status that
-arithmetic cannot make.
+The third row carries most of the weight, and it is the row I got wrong first time.
+An absent period means *unknown*, not "the same period as the other fact". Treating
+two undated facts as contemporaneous made every difference in their values look like a
+contradiction: measured across two starter documents, that manufactured 1,480 false
+contradictions, 45% of all pairs. Refusing to rule on them cut adjudication calls
+sevenfold and cost nothing, because every case worth demonstrating carries an explicit
+period on both sides.
+
+`insufficient_context` is a real answer rather than a failure. The pair is stored and
+visible, the system simply declines to claim a relationship it cannot support.
+
+Attribute facts always go to the model, because "was a director" versus "resigned with
+effect from 1 July 2024" is a judgement about time and status that arithmetic cannot
+make.
 
 The model returns a relation, a reason code, an explanation, a confidence, and — when it
 claims a reconciliation — the **transformation it is claiming**: a scale factor, a change
