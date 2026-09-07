@@ -1557,6 +1557,26 @@ def test_known_terms_are_not_resent(tmp_path):
     conn.commit()
     client = LLMClient(conn, api_key=None, model="m")   # no key: a call would raise
     assert canonicalise(client, conn, "metric", ["x"]) == {"x": ("cid", "X")}
+
+def test_a_later_document_is_offered_the_existing_groups(tmp_path):
+    # Documents arrive one at a time, so a term from the second document must
+    # be able to join a group created by the first. If the prompt does not
+    # carry the existing groups, the same metric gets two canonical ids and
+    # nothing ever pairs across documents.
+    conn = connect(tmp_path / "t.sqlite"); init_schema(conn)
+    conn.execute("INSERT INTO canon_terms VALUES "
+                 "('metric','revenue from services','revenue_from_ops','Revenue')")
+    conn.commit()
+    prompt = build_canon_prompt("metric", ["Revenue from Operations"],
+                                {"revenue_from_ops": "Revenue"})
+    assert "revenue_from_ops" in prompt, "existing group must reach the model"
+    put(conn, cache_key("m", CANON_PROMPT_VERSION, prompt), {"groups": [
+        {"canon_id": "revenue_from_ops", "label": "Revenue",
+         "members": ["Revenue from Operations"]}]})
+    client = LLMClient(conn, api_key=None, model="m")
+    mapping = canonicalise(client, conn, "metric",
+                           ["revenue from services", "Revenue from Operations"])
+    assert mapping["Revenue from Operations"][0] == mapping["revenue from services"][0]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1576,6 +1596,14 @@ the same {kind}. Different scopes, segments, or reporting bases are the SAME {ki
 those distinctions are recorded separately as qualifiers. Genuinely different subjects
 stay apart.
 
+These groups already exist, from documents ingested earlier. If a name below belongs to
+one of them, reuse that canon_id exactly. Reusing an existing id is what lets the same
+{kind} be recognised across documents; minting a new id for something already known
+silently stops those facts ever being compared. Create a new id only when nothing fits.
+
+EXISTING GROUPS:
+{existing}
+
 Return JSON: {{"groups": [{{"canon_id": "snake_case_id", "label": "Readable label",
 "members": ["...", "..."]}}]}}
 Every input name must appear in exactly one group.
@@ -1584,9 +1612,12 @@ NAMES:
 {terms}
 """
 
-def build_canon_prompt(kind: str, terms: list[str]) -> str:
+def build_canon_prompt(kind: str, terms: list[str],
+                       existing: dict[str, str] | None = None) -> str:
     listed = "\n".join(f"- {t}" for t in sorted(set(terms)))
-    return CANON_PROMPT.format(kind=kind, terms=listed)
+    known = ("\n".join(f"- {cid}: {label}" for cid, label in sorted(existing.items()))
+             if existing else "(none yet - this is the first document)")
+    return CANON_PROMPT.format(kind=kind, terms=listed, existing=known)
 ```
 
 - [ ] **Step 4: Implement canon.py**
@@ -1606,7 +1637,12 @@ def canonicalise(client, conn, kind: str,
     if not pending:
         return {t: mapping[t] for t in raw_terms if t in mapping}
 
-    prompt = build_canon_prompt(kind, pending)
+    # Offer the groups already assigned. Without this a term from a document
+    # ingested later can never join an existing group, the same metric ends up
+    # with two canonical ids, and facts stop pairing across documents entirely
+    # - which is the one thing this system exists to do.
+    existing = {cid: label for cid, label in mapping.values()}
+    prompt = build_canon_prompt(kind, pending, existing)
     data = client.complete_json(prompt, CANON_PROMPT_VERSION)
     rows = []
     for group in data.get("groups", []):
@@ -1632,7 +1668,7 @@ def canonicalise(client, conn, kind: str,
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/test_canon.py -v`
-Expected: 2 passed
+Expected: 3 passed
 
 - [ ] **Step 6: Commit**
 
@@ -2202,6 +2238,23 @@ for window in windows:
 `NoAPIKey` propagates deliberately: it means the run cannot proceed at all, and
 failing loudly beats writing an empty knowledge layer that looks like a result.
 
+`_bump_job` is the progress writer the loop above calls:
+
+```python
+def _bump_job(conn, job_id, *, stage="extracting", done=0, total=None, facts=0):
+    if not job_id:
+        return                      # scripted ingest has no job row
+    conn.execute(
+        "UPDATE jobs SET stage=?, done=?, facts=?"
+        + (", total=?" if total is not None else "") + " WHERE id=?",
+        (stage, done, facts, *( (total,) if total is not None else () ), job_id))
+    conn.commit()
+```
+
+`build_relations` writes with `INSERT OR REPLACE`, relying on the unique index on
+`(fact_a, fact_b)`. It runs after every upload and re-pairs documents already
+ingested, so without that it would duplicate every existing relation each time.
+
 `build_relations` loads all facts, calls `candidate_pairs`, applies `rule_verdict`, calls
 `adjudicate` for anything not settled by rule, runs `verify` on any claimed transform,
 sets `final_verdict` (downgrading to `needs_review` when verification fails or rule and
@@ -2314,6 +2367,12 @@ git commit -m "Add web screens for documents, facts, relations and gaps"
       `ingest` for each PDF, then `build_relations` once at the end. Print a per-document
       summary of facts found, facts rejected, and gaps.
 - [ ] **Step 2: Run it against `../starter-datasets/starter-datasets` with a real key.**
+      Ingest in a fixed, sorted order and record that order in the README. The
+      canonicalisation prompt now includes the groups already assigned, so its text —
+      and therefore its cache key — depends on what was ingested before it. A grader
+      replaying the committed cache in the same order gets cache hits; a different
+      order re-asks the question and needs a key. Extraction prompts are unaffected,
+      since a window's text does not depend on ingest order.
 - [ ] **Step 3: Confirm all four cases appear.** Query the relations table for a
       `corroborates` spanning two documents, a `contradicts`, a `reconciled_by_context`,
       and check the gaps table contains the IMF cover page.
@@ -2356,6 +2415,35 @@ git commit -m "Add README with setup, approach and the four demonstrated cases"
 ---
 
 ## Self-Review Notes
+
+### Fifth review round
+
+Three more, one of them the most consequential defect found in any pass.
+
+17. **Canonicalisation could not merge terms across separately ingested documents.**
+    `canonicalise` sends the model only the terms it has never seen, never the groups
+    it already assigned, so a term arriving with a later document cannot join an
+    existing group. Simulated end to end: the earnings deck's "revenue from services"
+    became `revenue_from_services`, the annual report's "Revenue from Operations"
+    became `revenue_from_operations`, and the two never pair. That is case 1, the
+    headline corroboration, and it silently would not have worked. It matters more
+    than the single case: documents always arrive one at a time, both through the API
+    and in the Task 17 script, so cross-document linking - the entire point of the
+    system - was broken by default. The prompt now carries the existing groups and
+    instructs the model to reuse an id when one fits.
+18. **Relations duplicated on every re-run.** `build_relations` runs after each upload
+    and re-pairs documents already ingested, but `relations` had no uniqueness
+    constraint. Uploading a third document would have doubled every relation from the
+    first two, and a fourth would have tripled them. Added a unique index on
+    `(fact_a, fact_b)`, written with `INSERT OR REPLACE` so re-running refreshes a
+    verdict instead of duplicating it. Verified idempotent over three runs.
+19. **`_bump_job` was called but never defined.** The progress writer referenced by the
+    per-window loop existed nowhere in the plan. Now specified.
+
+One consequence worth stating plainly: because the canonicalisation prompt now depends
+on what was ingested before it, its cache key does too. The committed cache therefore
+replays only if documents are ingested in the same order, which Task 17 now fixes and
+records. Extraction prompts are unaffected - a window's text does not depend on order.
 
 ### Fourth review round
 

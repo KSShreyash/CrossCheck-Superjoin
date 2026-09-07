@@ -49,6 +49,10 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE TABLE IF NOT EXISTS canon_terms (
   kind TEXT, raw TEXT, canon_id TEXT, label TEXT, PRIMARY KEY (kind, raw));
 
+-- build_relations runs after every upload and re-pairs documents already
+-- ingested, so without this each re-run would duplicate every relation
+CREATE UNIQUE INDEX IF NOT EXISTS idx_rel_pair ON relations(fact_a, fact_b);
+
 CREATE INDEX IF NOT EXISTS idx_facts_metric ON facts(metric_id);
 CREATE INDEX IF NOT EXISTS idx_facts_doc ON facts(doc_id);
 CREATE INDEX IF NOT EXISTS idx_rel_verdict ON relations(final_verdict);
