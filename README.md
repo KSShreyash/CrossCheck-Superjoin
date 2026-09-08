@@ -105,50 +105,76 @@ pytest            # full suite, no network access required
 
 ## The four cases
 
-> **PENDING THE REAL INGEST.** The reconciliation logic below is implemented and tested,
-> and each case is asserted against the real printed figures in `tests/`. The evidence
-> quotes, page numbers and counts in this section get filled in from
-> `python scripts/show_cases.py` after the starter documents are ingested with a key.
-> Nothing here is quoted from a run that has not happened.
+Produced by `python scripts/show_cases.py` over the six starter documents. Every quote
+below is stored evidence, and `python scripts/audit_grounding.py` re-checks all 701 of
+them against the pages they cite.
 
 **1. A fact corroborated across documents, expressed differently.**
-The earnings deck reports `₹8,142 Cr` of FY24 revenue from services; the annual report
-reports `81,415.38` in ₹ million as revenue from operations. Normalisation reduces both
-to about ₹81.4bn, a relative gap of 5.7e-05, and the rule layer settles it as a
-corroboration with no model call. The labels coincide that year because FY24 traded-goods
-revenue was nil — it was ₹16.54 mn in FY23 — so the two names denote the same quantity.
 
-**2. A genuine contradiction.**
-The RBI Annual Report projects real GDP growth of 6.5% for 2025-26; the IMF Article IV
-projects 6.6% for FY2025/26. Same metric, same normalised period, different institutions.
-This is only detectable because the period normaliser resolves `2025-26` and `FY2025/26`
-to the same fiscal year; without that the two are never compared.
+| | earnings deck, p6 | annual report, p4 |
+| --- | --- | --- |
+| quote | "1.4 Mn Tons PTL freight tonnage in FY24" | "1,429K tonnes PTL freight delivered" |
+| metric | `PTL freight tonnage` | `PTL freight delivered` |
+| normalised | 1,400,000 TONNE | 1,429,000 TONNE |
+
+Different names, different scale words, and a 2% gap that is not a disagreement: the
+deck prints two significant figures where the report prints four. Comparing at the
+coarser precision settles it as a corroboration, by rule, with no model call.
+
+**2. A genuine or likely contradiction.**
+
+| | earnings deck, p6 | annual report, p4 |
+| --- | --- | --- |
+| quote | "₹76Cr / 0.9% Adj. EBITDA / Adj. EBITDA margin" | "1.6% EBITDA margin" |
+| value | 0.9 per cent, FY24 | 1.6 per cent, FY24 |
+
+Same company, same period, same unit, and nothing recorded distinguishes them — so the
+rules raise it rather than explain it away. The honest reading is that one figure is
+adjusted and the other is not, a distinction neither document attached to the number
+itself. That is what makes it worth surfacing: the disagreement is real *as reported*.
 
 **3. An apparent contradiction explained by context.**
-FY24 revenue appears as both `₹74,540.82 mn` and `₹81,415.38 mn` in the same annual
-report. Exactly one qualifier differs — standalone versus consolidated — so the pair is
-sent to the model, which names the reporting basis, and verification confirms the basis
-genuinely differs between the two facts.
 
-A second instance, across documents and turning on data vintage: the Economic Survey
-gives FY25 growth as 6.4% (first advance estimate) against the IMF's 6.5% (actual).
+| | earnings deck, p6 | annual report, p2 |
+| --- | --- | --- |
+| quote | "1.4 Mn Tons PTL freight tonnage in FY24" | ">4.8Mn tonnes Part-truckload freight delivered since inception" |
+| period | FY24 | as of March 31, 2024 (cumulative) |
+
+One year against everything ever shipped. The period normaliser separates them and the
+pair resolves as `different_period` by rule, with no model call — a difference of period
+is what reporting looks like, not a conflict.
+
+Another, across a two-year gap: `82 gateways ... as of December 31, 2021` (prospectus)
+against `111 Gateways ... As of March 31, 2024` (annual report), where the model named
+the reason and verification confirmed the periods genuinely differ.
 
 **4. An extraction or reasoning failure, and how it is handled.**
-Three real ones, all surfaced rather than hidden:
 
-- *Unreadable pages.* The IMF report's cover page yields zero characters because it is an
-  image. It is recorded as a gap with a reason, visible in the interface, rather than
-  quietly contributing nothing. A second gap turned up unprompted in the prospectus
-  (page 63, 53 characters).
-- *Ungrounded facts.* Any proposed fact whose quote cannot be found verbatim in its
-  source window is rejected and stored in `rejected_facts` with the reason. This is how
-  the system can claim every stored fact is grounded rather than merely intending it.
-- *Undecidable pairs.* Facts without a parseable period cannot be compared honestly, so
-  they land in `insufficient_context` instead of being called contradictions. This was
-  found by measurement: the earlier behaviour produced 1,480 false contradictions, 45% of
-  all pairs. The fix is a refusal to answer, which is the correct output.
+- **6 unreadable pages**, detected without any model: the IMF cover page yields no text
+  at all, four earnings-deck slides are images, and prospectus p63 gives 53 characters.
+  Recorded as gaps with reasons rather than contributing nothing silently.
+- **41 proposed facts rejected** because their quote could not be found verbatim in the
+  window it came from. This is why every stored fact is grounded rather than intended
+  to be.
+- **710 pairs left undecided** as `insufficient_context` — facts without a parseable
+  period cannot honestly be called contradictory. An earlier version treated a missing
+  period as a matching one and manufactured 1,480 false contradictions, 45% of all pairs.
 
-The failure I would most want to fix next is table column attribution — see Limitations.
+The failure I would fix next is table column attribution, and the second is that
+`amount` over-merged "Net Assets Amount" with "Public and Rights Issues Amount" during
+canonicalisation — the over-merge risk named in the design, observed in practice.
+
+### What the corpus produced
+
+| | |
+| --- | --- |
+| documents / pages | 6 / 511 |
+| facts stored | 701, **all 701 resolved to a page and verified against it** |
+| facts carrying a period | 480 (68%) |
+| relations | 1,155 |
+| corroborates / reconciled / contradicts | 218 / 182 / 45 |
+| of those, across documents | 18 / 17 / 5 |
+| model calls consumed | 100, all cached and replayable |
 
 ---
 
