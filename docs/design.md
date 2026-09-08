@@ -332,6 +332,21 @@ than to assume one does not exist:
 - **Pairs the rules can settle never reach the model at all**, which is what makes the
   adjudication budget go far enough to matter.
 - **`--dry-run` prices a run before it happens**, against the real quota.
+- **Rotation across models.** The quota is counted per project *per model*, so several
+  models carry several allowances. When a pairing reports a daily limit it is marked
+  spent and the next is used. A cached answer under any rotated model is still a hit, so
+  rotation never re-asks a question already paid for. Extra keys can be supplied the same
+  way for anyone with more than one project of their own.
+- **A daily limit is never retried.** Every attempt is itself a counted request, so the
+  original backoff spent four more requests to be told the same thing — which is why the
+  second model appeared to die after seven calls rather than twenty. Per-minute limits
+  are still waited out; per-day limits move straight on.
+
+Rotation has a cost worth naming: the model is part of every cache key, so replaying a
+rotated corpus depends on the same rotation happening again. The order is therefore
+fixed rather than random, and the better model goes first — extraction quality is not
+uniform, and `gemini-3.6-flash` attached periods far more reliably than `3.7-flash` on
+the same documents.
 
 The cost of the compromise is honest and worth stating: with a per-document window cap,
 the system reads the densest sections rather than the whole document, so recall is
