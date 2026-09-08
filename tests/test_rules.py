@@ -123,3 +123,12 @@ def test_provenance_plus_a_real_qualifier_still_needs_judgement():
     b = _f(6.6, "PERCENT", period=FY26,
            quals={"source": "fund staff", "vintage": "actual"})
     assert rule_verdict(a, b, tol=1e-3)[0] == "reconcilable"
+
+
+def test_a_differing_subject_is_recorded_as_a_difference():
+    a = _f(6.5, "PERCENT", period=FY26)
+    b = _f(6.6, "PERCENT", period=FY26)
+    a.entity_id, b.entity_id = "indias_gdp", "real_gdp"
+    verdict, diff = rule_verdict(a, b, tol=1e-3)
+    assert "subject" in diff
+    assert verdict == "reconcilable", "one difference, so the model explains it"

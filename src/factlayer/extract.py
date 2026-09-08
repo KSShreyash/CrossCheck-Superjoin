@@ -44,6 +44,28 @@ def locate_quote(haystack: str, quote: str) -> tuple[int, int] | None:
     return start, end
 
 
+def _as_text(value) -> str | None:
+    """Coerce a model-supplied scalar to text.
+
+    JSON has numbers, and a model asked for "the number exactly as printed"
+    will sometimes oblige with 6.5 rather than "6.5". Everything downstream
+    treats these as strings, so the conversion belongs here, at the boundary
+    where untrusted data arrives, rather than as a guard at every use.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        # repr() would render 6.5 as 6.5 but 1e10 as 1e+10; format plainly
+        return f"{value:g}" if isinstance(value, float) else str(value)
+    if isinstance(value, (list, dict)):
+        return None                  # not a scalar; treat as absent
+    return str(value)
+
+
 def extract_facts(client, window: Window, doc_id: int
                   ) -> tuple[list[Fact], list[dict]]:
     """Ask for facts, keep only those whose quote is really in the window."""
@@ -53,7 +75,7 @@ def extract_facts(client, window: Window, doc_id: int
     rejected: list[dict] = []
 
     for raw in data.get("facts", []):
-        quote = (raw.get("evidence_quote") or "").strip()
+        quote = (_as_text(raw.get("evidence_quote")) or "").strip()
         span = locate_quote(window.text, quote)
         if span is None:
             rejected.append({"payload": raw,
@@ -66,12 +88,13 @@ def extract_facts(client, window: Window, doc_id: int
             doc_id=doc_id,
             subject=str(raw["subject"]).strip(),
             metric=str(raw["metric"]).strip(),
-            value_raw=raw.get("value_raw"),
+            value_raw=_as_text(raw.get("value_raw")),
             value_num=None,
-            unit_raw=raw.get("unit_raw"),
-            period_raw=raw.get("period_raw"),
-            qualifiers=raw.get("qualifiers") or {},
-            claim_type=raw.get("claim_type") or "measurement",
+            unit_raw=_as_text(raw.get("unit_raw")),
+            period_raw=_as_text(raw.get("period_raw")),
+            qualifiers=raw.get("qualifiers") if isinstance(
+                raw.get("qualifiers"), dict) else {},
+            claim_type=_as_text(raw.get("claim_type")) or "measurement",
             evidence_quote=quote,
             confidence=float(raw.get("confidence") or 0.0),
         )
@@ -93,9 +116,10 @@ def dedupe_facts(facts: list[Fact]) -> list[Fact]:
     """
     best: dict[tuple, Fact] = {}
     for f in facts:
-        key = (f.doc_id, f.subject.strip().lower(), f.metric.strip().lower(),
-               (f.value_raw or "").strip(), (f.period_raw or "").strip(),
-               _WS.sub(" ", f.evidence_quote).strip().lower())
+        key = (f.doc_id, str(f.subject).strip().lower(),
+               str(f.metric).strip().lower(),
+               str(f.value_raw or "").strip(), str(f.period_raw or "").strip(),
+               _WS.sub(" ", str(f.evidence_quote)).strip().lower())
         current = best.get(key)
         if current is None or f.confidence > current.confidence:
             best[key] = f

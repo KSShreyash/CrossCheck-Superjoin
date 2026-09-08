@@ -29,6 +29,10 @@ def qualifier_diff(a: Fact, b: Fact) -> dict[str, tuple]:
         left, right = a.qualifiers.get(key), b.qualifiers.get(key)
         if left != right:
             diff[key] = (left, right)
+    if a.entity_id and b.entity_id and a.entity_id != b.entity_id:
+        # a real difference in what is being measured, so it belongs in the
+        # comparison rather than being used to drop the pair silently
+        diff["subject"] = (a.entity_id, b.entity_id)
     if (a.period_start, a.period_end) != (b.period_start, b.period_end):
         diff["period"] = ((a.period_start, a.period_end),
                           (b.period_start, b.period_end))

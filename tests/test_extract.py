@@ -82,3 +82,22 @@ def test_overlap_twins_are_deduped_but_other_documents_survive():
     kept = [f for f in out if f.doc_id == 1 and f.value_raw == "81,415.38"]
     assert len(kept) == 1 and kept[0].confidence == 0.95
     assert any(f.doc_id == 2 for f in out), "cross-document copy is a real corroboration"
+
+
+def test_numeric_and_odd_json_types_do_not_crash_extraction(tmp_path):
+    # JSON has numbers, and a model asked for "the number exactly as printed"
+    # will sometimes return 6.5 rather than "6.5". Every downstream string
+    # operation would then fail on a whole window of otherwise good facts.
+    payload = {"facts": [{
+        "subject": "India", "metric": "real GDP growth",
+        "value_raw": 6.5, "unit_raw": "per cent", "period_raw": 2026,
+        "qualifiers": ["not", "an", "object"], "claim_type": None,
+        "evidence_quote": "Rs 81,415.38 million", "confidence": "0.9"}]}
+    client = _client(tmp_path, payload)
+    facts, rejected = extract_facts(client, _window(), doc_id=1)
+    assert not rejected
+    f = facts[0]
+    assert f.value_raw == "6.5" and f.period_raw == "2026"
+    assert f.qualifiers == {}, "a non-object qualifiers field is discarded"
+    assert f.claim_type == "measurement"
+    dedupe_facts(facts)          # must not raise

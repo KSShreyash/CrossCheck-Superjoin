@@ -30,8 +30,15 @@ def candidate_pairs(facts: list[Fact], max_per_fact: int) -> list[tuple[int, int
         if i == j:
             return
         a, b = (i, j) if i < j else (j, i)
+        # Differing subjects block a pair only when the metric differs too.
+        # Canonicalisation names the thing measured, so one document says
+        # "India's GDP" where another says "real GDP" and a strict identity
+        # test drops the comparison before anything can look at it. When the
+        # metric already matches, the subject difference is recorded and
+        # judged rather than used to silently discard the pair.
         if facts[a].entity_id and facts[b].entity_id and \
-           facts[a].entity_id != facts[b].entity_id:
+           facts[a].entity_id != facts[b].entity_id and \
+           facts[a].metric_id != facts[b].metric_id:
             return
         # incomparable units are noise, not disagreement: without this gate a
         # rupee figure pairs with a percentage purely on shared metric words

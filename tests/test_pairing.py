@@ -29,10 +29,15 @@ def test_lexical_channel_catches_missing_canonical_id():
     assert (0, 1) in candidate_pairs([a, b], max_per_fact=10)
 
 
-def test_different_entities_are_not_paired():
+def test_different_subjects_sharing_a_metric_are_surfaced_not_dropped():
+    # "delhivery revenue" against "india revenue" is probably not a real
+    # comparison, but canonicalisation cannot be trusted to tell that apart
+    # from "India's GDP" against "real GDP". The pair is surfaced with the
+    # subject difference recorded, and the model is allowed to call it
+    # unrelated - which is a verdict, not a silent omission.
     a = _f(1, "revenue", "revenue", entity="delhivery")
     b = _f(2, "revenue", "revenue", entity="india")
-    assert candidate_pairs([a, b], max_per_fact=10) == []
+    assert (0, 1) in candidate_pairs([a, b], max_per_fact=10)
 
 
 def test_incomparable_units_are_not_paired():
@@ -50,3 +55,19 @@ def test_cap_limits_pairs_per_fact():
         seen[a] = seen.get(a, 0) + 1
         seen[b] = seen.get(b, 0) + 1
     assert max(seen.values()) <= 2
+
+
+def test_differing_subjects_still_pair_when_the_metric_matches():
+    # canonicalisation names the thing measured, so one document says
+    # "India's GDP" where another says "real GDP". Dropping the pair on that
+    # basis hides the comparison entirely instead of judging it.
+    a = _f(1, "growth", "real GDP growth", entity="indias_gdp", unit="PERCENT")
+    b = _f(2, "growth", "growth at constant prices", entity="real_gdp",
+           unit="PERCENT")
+    assert (0, 1) in candidate_pairs([a, b], max_per_fact=10)
+
+
+def test_unrelated_subjects_and_metrics_are_still_kept_apart():
+    a = _f(1, "revenue", "revenue from operations", entity="delhivery")
+    b = _f(2, "tonnage", "freight tonnage", entity="india")
+    assert candidate_pairs([a, b], max_per_fact=10) == []
