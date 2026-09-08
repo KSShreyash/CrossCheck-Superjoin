@@ -12,34 +12,39 @@ Built for the Superjoin engineering intern assignment.
 Requires Python 3.11 or newer.
 
 ```bash
-git clone <this repo>
-cd factlayer
+git clone https://github.com/KSShreyash/CrossCheck-Superjoin.git
+cd CrossCheck-Superjoin
 pip install -e ".[dev]"
-uvicorn factlayer.api:app --reload
 ```
 
-Open <http://127.0.0.1:8000>.
-
-**You do not need an API key to see the starter results.** Every model call is cached
-under a hash of its prompt, and the cache for the starter documents is committed, so a
-clone replays the whole knowledge layer offline. A key is only needed to ingest a PDF
+**No API key is needed to reproduce everything below.** The model responses are committed
+under `cache/`, so the pipeline replays them offline. A key is only needed to read a PDF
 the cache has never seen.
 
-To ingest new documents, put a key in `.env` (the file is gitignored):
+The starter PDFs are not redistributed here — they are the documents supplied with the
+assignment. Point the ingest script at wherever you keep them:
+
+```bash
+python scripts/ingest_starter.py /path/to/starter-datasets --max-windows-per-doc 25
+python scripts/show_cases.py            # the four required cases, with evidence
+python scripts/audit_grounding.py       # re-checks every quote against its source page
+uvicorn factlayer.api:app               # then open http://127.0.0.1:8000
+```
+
+The first command takes about three seconds and makes no network requests. It finds PDFs
+recursively, so either level of the supplied `starter-datasets/` folder works. Any other
+folder of PDFs works too — a document the cache has not seen simply needs a key.
+
+To ingest your own PDFs, put a key in `.env` (gitignored; a free one comes from
+<https://aistudio.google.com/apikey>):
 
 ```
 GEMINI_API_KEY=your_key_here
 ```
 
-A free key comes from <https://aistudio.google.com/apikey>.
+Then upload through the web interface, or point the script at another folder.
 
-Then either upload a PDF through the web interface, or run the whole starter set:
-
-```bash
-python scripts/ingest_starter.py ../starter-datasets/starter-datasets --dry-run
-python scripts/ingest_starter.py ../starter-datasets/starter-datasets
-python scripts/show_cases.py          # prints the four cases with their evidence
-```
+Run the tests with `pytest` — the full suite needs no network access and no key.
 
 **The free tier allows 20 requests per day, per model.** Not per minute — I found that
 out by hitting it mid-ingest. The whole corpus needs about 160 requests, so one model
