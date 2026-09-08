@@ -74,6 +74,24 @@ def connect(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+# Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves an
+# existing table untouched, so a database made by an earlier version needs the
+# new column adding explicitly rather than silently failing on the next query.
+_ADDED_COLUMNS = [
+    ("documents", "ingest_complete", "INTEGER DEFAULT 0"),
+]
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    for table, column, spec in _ADDED_COLUMNS:
+        existing = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if not existing:
+            continue                      # table not created yet
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _apply_migrations(conn)
     conn.commit()
