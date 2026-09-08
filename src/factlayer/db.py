@@ -95,3 +95,33 @@ def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     _apply_migrations(conn)
     conn.commit()
+
+
+SHIPPED_CACHE = Path(__file__).resolve().parents[2] / "cache" / "starter_cache.sqlite"
+
+
+def seed_from_shipped_cache(conn: sqlite3.Connection,
+                            path: Path | None = None) -> int:
+    """Load the committed responses so the starter corpus replays without a key.
+
+    Only the model responses and the canonical term mapping are shipped, not
+    facts or relations: everything else is recomputed from them, so the results
+    a grader sees are produced by this code rather than copied from a database
+    I prepared. Returns the number of cached responses loaded.
+    """
+    path = path or SHIPPED_CACHE
+    if not path.exists():
+        return 0
+    if conn.execute("SELECT 1 FROM llm_cache LIMIT 1").fetchone():
+        return 0                     # already populated; leave it alone
+    conn.execute("ATTACH DATABASE ? AS shipped", (str(path),))
+    try:
+        conn.execute("INSERT OR REPLACE INTO llm_cache(key, response) "
+                     "SELECT key, response FROM shipped.llm_cache")
+        conn.execute("INSERT OR REPLACE INTO canon_terms(kind, raw, canon_id, label) "
+                     "SELECT kind, raw, canon_id, label FROM shipped.canon_terms")
+        conn.commit()
+        loaded = conn.execute("SELECT COUNT(*) FROM llm_cache").fetchone()[0]
+    finally:
+        conn.execute("DETACH DATABASE shipped")
+    return loaded

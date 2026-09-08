@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .config import key_list, model_list, settings
-from .db import connect, init_schema
+from .db import connect, init_schema, seed_from_shipped_cache
 from .llm.client import LLMClient, NoAPIKey
 from .pipeline import build_relations, ingest
 
@@ -25,6 +25,7 @@ app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 def _conn_for(path: str) -> sqlite3.Connection:
     conn = connect(path)
     init_schema(conn)
+    seed_from_shipped_cache(conn)
     return conn
 
 

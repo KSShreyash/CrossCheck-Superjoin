@@ -20,7 +20,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from factlayer.config import (key_list, model_list,          # noqa: E402
                               settings)
-from factlayer.db import connect, init_schema                # noqa: E402
+from factlayer.db import (connect, init_schema,               # noqa: E402
+                          seed_from_shipped_cache)
 from factlayer.llm.client import LLMClient, NoAPIKey         # noqa: E402
 from factlayer.pipeline import (build_relations,               # noqa: E402
                                 canonicalise_corpus, ingest)
@@ -86,6 +87,10 @@ def main() -> int:
 
     conn = connect(args.db)
     init_schema(conn)
+    seeded = seed_from_shipped_cache(conn)
+    if seeded:
+        print(f"loaded {seeded} committed responses; documents already read "
+              f"cost no requests")
     client = LLMClient(conn, settings.gemini_api_key, settings.model,
                        models=model_list(), api_keys=key_list())
 

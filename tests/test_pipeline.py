@@ -320,3 +320,49 @@ def test_reingesting_replaces_facts_rather_than_accumulating(tmp_path, make_pdf)
         "SELECT COUNT(*) FROM evidence e JOIN facts f ON f.id = e.fact_id "
         "WHERE e.page_no IS NULL").fetchone()[0]
     assert orphans == 0
+
+
+def test_uncached_windows_are_skipped_not_fatal_when_replaying(tmp_path, make_pdf):
+    # Replaying a committed cache with a larger budget than it was built with
+    # hits windows nobody has read. Abandoning the document there would throw
+    # away the cached windows behind it.
+    pages = [["Consolidated revenue was Rs 81,415.38 million for FY24."],
+             ["An entirely separate page of text that was never read before."]]
+    pdf = make_pdf(pages)
+    conn = connect(tmp_path / "t.sqlite")
+    init_schema(conn)
+    client = LLMClient(conn, api_key=None, model="m")
+
+    from factlayer.ingest.pdf import extract_blocks as _eb
+    from factlayer.ingest.segment import build_windows as _bw
+    blocks, _ = _eb(pdf)
+    windows = _bw(blocks, 1, 60, 0)          # tiny windows, so several of them
+    assert len(windows) > 1
+    # cache exactly one of them
+    put(conn, cache_key("m", EXTRACTION_PROMPT_VERSION,
+                        build_extraction_prompt(windows[0].text)),
+        {"facts": [{"subject": "Delhivery", "metric": "revenue from operations",
+                    "value_raw": "81,415.38", "unit_raw": "Rs million",
+                    "period_raw": "FY24", "qualifiers": {},
+                    "claim_type": "measurement",
+                    "evidence_quote": windows[0].text.strip()[:40],
+                    "confidence": 0.9}]})
+
+    from factlayer.config import settings
+    object.__setattr__(settings, "window_chars", 60)
+    object.__setattr__(settings, "window_overlap", 0)
+    try:
+        doc_id = ingest(conn, client, pdf, canonicalise_terms=False)
+    finally:
+        object.__setattr__(settings, "window_chars", 12000)
+        object.__setattr__(settings, "window_overlap", 1200)
+
+    # the cached window still produced its fact
+    assert conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0] >= 1
+    # and the document is not marked done, so a later run with a key retries it
+    done = conn.execute("SELECT ingest_complete FROM documents WHERE id=?",
+                        (doc_id,)).fetchone()[0]
+    assert not done
+    reasons = [r[0] for r in conn.execute(
+        "SELECT reason FROM rejected_facts WHERE doc_id=?", (doc_id,))]
+    assert any("no cached response" in r for r in reasons)

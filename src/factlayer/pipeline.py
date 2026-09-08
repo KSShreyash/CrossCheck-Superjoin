@@ -107,6 +107,7 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
     facts: list[Fact] = []
     rejected: list[dict] = []
     window_of: dict[int, object] = {}
+    skipped: list[int] = []
 
     def pull(window, allow_split=True):
         """Extract from one window, halving it once if the output truncated.
@@ -122,7 +123,15 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
                 window_of[id(f)] = window
             return got, bad
         except NoAPIKey:
-            raise                    # nothing cached and no key: stop loudly
+            # This window was never cached and there is no key to read it with.
+            # Skip it rather than abandoning the document: the windows behind
+            # it may well be cached, which is exactly the case when replaying a
+            # committed cache with a larger budget than it was built with. The
+            # document is left marked incomplete so a later run with a key
+            # picks it up.
+            skipped.append(window.index)
+            return [], [{"payload": {"window_index": window.index},
+                         "reason": "no cached response and no API key"}]
         except BadModelJSON as exc:
             halves = split_window(window) if allow_split else []
             if not halves:
@@ -166,7 +175,8 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
     for f in facts:
         save_fact(conn, f, window_of[id(f)], block_row_ids)
     save_rejected(conn, doc_id, rejected)
-    conn.execute("UPDATE documents SET ingest_complete=1 WHERE id=?", (doc_id,))
+    if not skipped:
+        conn.execute("UPDATE documents SET ingest_complete=1 WHERE id=?", (doc_id,))
     conn.commit()
     _bump_job(conn, job_id, stage="done", done=len(windows), total=len(windows),
               facts=len(facts))

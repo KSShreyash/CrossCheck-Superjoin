@@ -41,20 +41,26 @@ python scripts/ingest_starter.py ../starter-datasets/starter-datasets
 python scripts/show_cases.py          # prints the four cases with their evidence
 ```
 
-**The free tier allows 20 requests per day, per model.** Not per minute — I found this
-out by hitting it mid-ingest. The full corpus needs about 160 requests, so reading all
-511 pages on one model would take eight days. Budget flags exist because of that:
+**The free tier allows 20 requests per day, per model.** Not per minute — I found that
+out by hitting it mid-ingest. The whole corpus needs about 160 requests, so one model
+cannot read all 511 pages in a day. Three things follow, and they shaped the design more
+than anything else:
+
+- **A budget is spent deliberately.** `--max-windows-per-doc N` reads the N densest
+  windows of each document. Windows were already ordered by fact density so an
+  interrupted run lost the least valuable pages; the same ordering lets a run be
+  truncated on purpose. `--dry-run` prices a run before it happens.
+- **Canonicalisation is one pass over the corpus, not one per document** — two requests
+  instead of twelve, and a better answer besides, since the model sees every metric name
+  at once rather than meeting them a document at a time.
+- **One key is enough, because the quota is per model.** The client rotates through
+  several models and moves on when one is spent. A quota refusal is never retried:
+  every attempt is itself a counted request, so backing off spends more of exactly what
+  just ran out. Set `FACTLAYER_MODELS` to change the order.
 
 ```bash
-# read the 2 densest windows of each document: about 14 requests
-python scripts/ingest_starter.py ../starter-datasets/starter-datasets \
-    --max-windows-per-doc 2 --max-model-calls 4
+python scripts/ingest_starter.py ../starter-datasets/starter-datasets --max-windows-per-doc 2
 ```
-
-`--dry-run` prices a run before it happens. `--max-windows-per-doc N` spends the budget
-on the N densest windows of each document, `--max-model-calls` caps adjudication, and
-`--limit N` ingests only the first N documents. `FACTLAYER_MODEL` selects the model,
-which matters because the quota is per model.
 
 Recall is therefore bounded by budget rather than by capability. Raise the cap and it
 reads more; nothing in the architecture changes.
@@ -107,76 +113,81 @@ pytest            # full suite, no network access required
 
 ## The four cases
 
-Produced by `python scripts/show_cases.py` over the six starter documents. Every quote
-below is stored evidence, and `python scripts/audit_grounding.py` re-checks all 701 of
-them against the pages they cite.
+Everything below is reproduced by cloning this repository and running two commands, with
+**no API key**: the model responses are committed, and the facts and relations are
+recomputed from them by this code. Every quote is stored evidence, and
+`python scripts/audit_grounding.py` re-checks all 490 of them against the pages they cite.
+
+```bash
+python scripts/ingest_starter.py ../starter-datasets/starter-datasets --max-windows-per-doc 25
+python scripts/show_cases.py
+```
 
 **1. A fact corroborated across documents, expressed differently.**
 
-| | earnings deck, p6 | annual report, p4 |
+| | annual report, p2 | earnings deck, p8 |
 | --- | --- | --- |
-| quote | "1.4 Mn Tons PTL freight tonnage in FY24" | "1,429K tonnes PTL freight delivered" |
-| metric | `PTL freight tonnage` | `PTL freight delivered` |
-| normalised | 1,400,000 TONNE | 1,429,000 TONNE |
+| quote | "18,793 (1) Pin codes covered" | "Pin-code reach(1) 18,074 18,540 18,675 18,793" |
+| metric | `Pin codes covered` | `Pin-code reach` |
+| period | as of March 31, 2024 | Q4 FY24 |
 
-Different names, different scale words, and a 2% gap that is not a disagreement: the
-deck prints two significant figures where the report prints four. Comparing at the
-coarser precision settles it as a corroboration, by rule, with no model call.
+Two documents, two names for the metric, and two ways of writing the period — one a
+date, the other a quarter — that normalise to the same instant. The deck reports it as
+the last point of a quarterly series; the annual report as a single figure. Settled by
+rule, no model call.
 
 **2. A genuine or likely contradiction.**
 
-| | earnings deck, p6 | annual report, p4 |
+| | annual report, p4 | earnings deck, p6 |
 | --- | --- | --- |
-| quote | "₹76Cr / 0.9% Adj. EBITDA / Adj. EBITDA margin" | "1.6% EBITDA margin" |
-| value | 0.9 per cent, FY24 | 1.6 per cent, FY24 |
+| quote | "1.6% EBITDA margin" | "₹76Cr / 0.9% Adj. EBITDA / Adj. EBITDA margin" |
+| value | 1.6 per cent, FY24 | 0.9 per cent, FY24 |
 
-Same company, same period, same unit, and nothing recorded distinguishes them — so the
-rules raise it rather than explain it away. The honest reading is that one figure is
-adjusted and the other is not, a distinction neither document attached to the number
-itself. That is what makes it worth surfacing: the disagreement is real *as reported*.
+Same company, same period, same unit, and nothing recorded distinguishes them, so the
+rules raise it rather than explain it away. The honest reading is that one is adjusted
+and the other is not — a distinction neither document attached to the number itself.
+That is what makes it worth surfacing: as reported, the two disagree.
 
 **3. An apparent contradiction explained by context.**
 
-| | earnings deck, p6 | annual report, p2 |
+| | prospectus, p44 | annual report, p2 |
 | --- | --- | --- |
-| quote | "1.4 Mn Tons PTL freight tonnage in FY24" | ">4.8Mn tonnes Part-truckload freight delivered since inception" |
-| period | FY24 | as of March 31, 2024 (cumulative) |
+| quote | "we provide our services in 17,488 postal index number ("PIN") codes, as of December 31, 2021" | "18,793 (1) Pin codes covered" |
+| period | as of December 31, 2021 | as of March 31, 2024 |
 
-One year against everything ever shipped. The period normaliser separates them and the
-pair resolves as `different_period` by rule, with no model call — a difference of period
-is what reporting looks like, not a conflict.
-
-Another, across a two-year gap: `82 gateways ... as of December 31, 2021` (prospectus)
-against `111 Gateways ... As of March 31, 2024` (annual report), where the model named
-the reason and verification confirmed the periods genuinely differ.
+The same metric as case 1, across a two-year gap. `different_period`, decided by rule
+with no model call: a company covering more PIN codes in 2024 than in 2021 is growth,
+not a contradiction. Case 1 and case 3 together are the point of the system — the same
+measure corroborates when the dates agree and reconciles when they do not.
 
 **4. An extraction or reasoning failure, and how it is handled.**
 
-- **6 unreadable pages**, detected without any model: the IMF cover page yields no text
-  at all, four earnings-deck slides are images, and prospectus p63 gives 53 characters.
-  Recorded as gaps with reasons rather than contributing nothing silently.
-- **41 proposed facts rejected** because their quote could not be found verbatim in the
-  window it came from. This is why every stored fact is grounded rather than intended
-  to be.
-- **710 pairs left undecided** as `insufficient_context` — facts without a parseable
-  period cannot honestly be called contradictory. An earlier version treated a missing
-  period as a matching one and manufactured 1,480 false contradictions, 45% of all pairs.
+- **6 unreadable pages**, found without any model: the IMF cover page yields no text at
+  all, four earnings-deck slides are images, and prospectus p63 gives 53 characters.
+  Recorded as gaps with reasons rather than silently contributing nothing.
+- **107 proposed facts rejected** because their quote could not be found verbatim in the
+  window it came from. This is why every stored fact is grounded rather than intended to
+  be, and the audit script lets you check that claim rather than take it.
+- **494 pairs left undecided** as `insufficient_context`, because a fact without a
+  parseable period cannot honestly be called contradictory. An earlier version treated a
+  missing period as a matching one and manufactured 1,480 false contradictions — 45% of
+  all pairs.
 
-The failure I would fix next is table column attribution, and the second is that
-`amount` over-merged "Net Assets Amount" with "Public and Rights Issues Amount" during
-canonicalisation — the over-merge risk named in the design, observed in practice.
+The two failures I would fix next are table column attribution, and canonicalisation
+over-merging: `amount` swept together "Net Assets Amount" and "Public and Rights Issues
+Amount", which is the over-merge risk named in the design, observed in practice.
 
-### What the corpus produced
+### What the committed run produces
 
 | | |
 | --- | --- |
 | documents / pages | 6 / 511 |
-| facts stored | 701, **all 701 resolved to a page and verified against it** |
-| facts carrying a period | 471 (67%) |
-| relations | 1,155 |
-| corroborates / reconciled / contradicts | 218 / 182 / 45 |
-| of those, across documents | 18 / 17 / 5 |
-| model calls consumed | 100, all cached and replayable |
+| facts stored | 490, **all 490 resolved to a page and verified against it** |
+| facts carrying a period | 321 (66%) |
+| relations | 629 |
+| corroborates / reconciled / contradicts | 34 / 79 / 22 |
+| rejected as ungrounded | 107 |
+| model calls needed to reproduce | **0** — 100 are committed |
 
 ---
 
