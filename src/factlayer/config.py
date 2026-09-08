@@ -15,6 +15,14 @@ class Settings:
     upload_dir: Path = ROOT / "uploads"
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY")
     model: str = os.getenv("FACTLAYER_MODEL", "gemini-3.6-flash")
+    # The free tier counts requests per day per project per model, so listing
+    # several models multiplies the daily allowance without multiplying keys.
+    # Order is fixed because the model name is part of every cache key.
+    model_rotation: str = os.getenv(
+        "FACTLAYER_MODELS",
+        "gemini-3.6-flash,gemini-3.7-flash,gemini-3.5-flash,gemini-3.1-flash-lite")
+    # optional comma-separated additional keys
+    api_key_rotation: str = os.getenv("GEMINI_API_KEYS", "")
     embed_model: str = "text-embedding-004"
     value_tolerance: float = 1e-3        # relative, absorbs printed rounding
     window_chars: int = 12000            # long-context extraction window
@@ -27,3 +35,20 @@ class Settings:
 
 
 settings = Settings()
+
+
+def _split(raw: str) -> list[str]:
+    return [x.strip() for x in (raw or "").split(",") if x.strip()]
+
+
+def model_list() -> list[str]:
+    """Models to rotate through, the configured default always first."""
+    models = _split(settings.model_rotation)
+    return [settings.model] + [m for m in models if m != settings.model]
+
+
+def key_list() -> list[str]:
+    """Keys to rotate through, the primary key always first."""
+    keys = _split(settings.api_key_rotation)
+    primary = [settings.gemini_api_key] if settings.gemini_api_key else []
+    return primary + [k for k in keys if k not in primary]

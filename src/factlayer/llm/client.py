@@ -14,14 +14,30 @@ class BadModelJSON(RuntimeError):
     """Model returned something that is not usable JSON."""
 
 
-# free-tier quota and transient server errors are worth waiting out;
-# a malformed response is not, because temperature 0 reproduces it
+class DailyQuotaExhausted(RuntimeError):
+    """This model's daily allowance is gone; waiting will not help."""
+
+
+# transient conditions worth waiting out
 _RETRYABLE = ("429", "rate limit", "resource_exhausted", "quota", "exhausted",
               "503", "unavailable", "500", "internal", "deadline")
 
+# markers that identify a per-DAY limit rather than a per-minute one
+_DAILY = ("perday", "per day", "requestsperday", "generaterequestsperday",
+          "quota_id: \"generaterequestsperdayperprojectpermodel")
+
+
+def _is_daily_quota(exc: Exception) -> bool:
+    blob = f"{exc}".lower().replace("-", "")
+    return any(marker.replace("-", "") in blob for marker in _DAILY)
+
 
 def _is_retryable(exc: Exception) -> bool:
-    if isinstance(exc, (BadModelJSON, NoAPIKey)):
+    if isinstance(exc, (BadModelJSON, NoAPIKey, DailyQuotaExhausted)):
+        return False
+    # Every attempt counts against the allowance, so retrying a daily quota
+    # error spends four more requests to be told the same thing.
+    if _is_daily_quota(exc):
         return False
     blob = f"{type(exc).__name__} {exc}".lower()
     return any(marker in blob for marker in _RETRYABLE)
@@ -62,47 +78,87 @@ def _loads_lenient(text: str) -> dict:
 
 
 class LLMClient:
-    def __init__(self, conn: sqlite3.Connection, api_key: str | None, model: str):
-        self.conn, self.api_key, self.model = conn, api_key, model
-        self._model_obj = None
+    """Cached Gemini client that can fall through exhausted models and keys.
 
-    def _provider(self):
-        if self._model_obj is None:
+    The free tier counts requests per day per project per model, so when one
+    model's allowance is gone the next one still has its own. Rotation moves on
+    rather than failing. Note that the model name is part of every cache key:
+    replaying a cached corpus needs the same rotation to happen again, which is
+    why the order is fixed rather than random.
+    """
+
+    def __init__(self, conn: sqlite3.Connection, api_key: str | None, model: str,
+                 models: list[str] | None = None,
+                 api_keys: list[str] | None = None):
+        self.conn = conn
+        self.models = [m for m in (models or [model]) if m]
+        self.api_keys = [k for k in (api_keys or ([api_key] if api_key else [])) if k]
+        self.api_key = self.api_keys[0] if self.api_keys else None
+        self.model = self.models[0]
+        self._spent: set[tuple[str, str]] = set()   # (key, model) pairs used up
+        self._cache_obj = None
+        self._cache_for: tuple[str, str] | None = None
+
+    def _provider(self, key: str, model: str):
+        if self._cache_for != (key, model):
             import google.generativeai as genai
-            genai.configure(api_key=self.api_key)
-            self._model_obj = genai.GenerativeModel(self.model)
-        return self._model_obj
+            genai.configure(api_key=key)
+            self._cache_obj = genai.GenerativeModel(model)
+            self._cache_for = (key, model)
+        return self._cache_obj
+
+    def _combinations(self):
+        """Every key and model pairing that has not been used up yet."""
+        for key in self.api_keys:
+            for model in self.models:
+                if (key, model) not in self._spent:
+                    yield key, model
+
+    _GENERATION = {
+        "temperature": 0,
+        "response_mime_type": "application/json",
+        # a 12k-char window can yield a lot of facts; the default ceiling
+        # truncates the JSON mid-object
+        "max_output_tokens": 8192,
+    }
 
     def complete_json(self, prompt: str, prompt_version: str,
-                      max_attempts: int = 5) -> dict:
-        key = cache.cache_key(self.model, prompt_version, prompt)
-        hit = cache.get(self.conn, key)
-        if hit is not None:
-            return hit
-        if not self.api_key:
+                      max_attempts: int = 4) -> dict:
+        # a cached answer under any model this client knows about is still an
+        # answer, so rotation never re-asks a question already paid for
+        for model in self.models:
+            hit = cache.get(self.conn,
+                            cache.cache_key(model, prompt_version, prompt))
+            if hit is not None:
+                return hit
+        if not self.api_keys:
             raise NoAPIKey(
                 "No cached response and GEMINI_API_KEY is unset. "
                 "Set a key to ingest documents the cache has not seen.")
 
-        resp = None
-        for attempt in range(max_attempts):
-            try:
-                resp = self._provider().generate_content(
-                    prompt,
-                    generation_config={
-                        "temperature": 0,
-                        "response_mime_type": "application/json",
-                        # a 12k-char window can yield a lot of facts; the
-                        # default ceiling truncates the JSON mid-object
-                        "max_output_tokens": 8192,
-                    })
-                break
-            except Exception as exc:
-                if attempt == max_attempts - 1 or not _is_retryable(exc):
-                    raise
-                # free tier rations requests per minute, so wait it out
-                time.sleep(min(2 ** attempt * 2, 60))
+        last_exc: Exception | None = None
+        for api_key, model in self._combinations():
+            for attempt in range(max_attempts):
+                try:
+                    resp = self._provider(api_key, model).generate_content(
+                        prompt, generation_config=self._GENERATION)
+                    data = _loads_lenient(resp.text)   # BadModelJSON not retried
+                    cache.put(self.conn,
+                              cache.cache_key(model, prompt_version, prompt), data)
+                    self.model, self.api_key = model, api_key
+                    return data
+                except Exception as exc:               # noqa: BLE001
+                    last_exc = exc
+                    if _is_daily_quota(exc):
+                        # this pairing is done for the day; try the next one
+                        self._spent.add((api_key, model))
+                        break
+                    if attempt == max_attempts - 1 or not _is_retryable(exc):
+                        raise
+                    # a per-minute limit, so wait it out
+                    time.sleep(min(2 ** attempt * 2, 60))
 
-        data = _loads_lenient(resp.text)      # BadModelJSON is not retried
-        cache.put(self.conn, key, data)
-        return data
+        raise DailyQuotaExhausted(
+            f"every model and key pairing is out of daily quota "
+            f"({len(self.api_keys)} key(s) x {len(self.models)} model(s)). "
+            f"Last error: {str(last_exc)[:160]}")

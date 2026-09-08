@@ -10,7 +10,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .config import settings
+from .config import key_list, model_list, settings
 from .db import connect, init_schema
 from .llm.client import LLMClient, NoAPIKey
 from .pipeline import build_relations, ingest
@@ -34,7 +34,8 @@ def get_conn() -> sqlite3.Connection:
 
 
 def get_client(conn) -> LLMClient:
-    return LLMClient(conn, settings.gemini_api_key, settings.model)
+    return LLMClient(conn, settings.gemini_api_key, settings.model,
+                     models=model_list(), api_keys=key_list())
 
 
 def _rows(cur) -> list[dict]:

@@ -13,7 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from factlayer.config import settings                       # noqa: E402
+from factlayer.config import (key_list, model_list,          # noqa: E402
+                              settings)
 from factlayer.db import connect, init_schema                # noqa: E402
 from factlayer.llm.client import LLMClient, NoAPIKey         # noqa: E402
 from factlayer.pipeline import (build_relations,               # noqa: E402
@@ -80,7 +81,8 @@ def main() -> int:
 
     conn = connect(args.db)
     init_schema(conn)
-    client = LLMClient(conn, settings.gemini_api_key, settings.model)
+    client = LLMClient(conn, settings.gemini_api_key, settings.model,
+                       models=model_list(), api_keys=key_list())
 
     print(f"{len(pdfs)} documents -> {args.db}")
     if not settings.gemini_api_key:
