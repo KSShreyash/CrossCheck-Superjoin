@@ -132,3 +132,23 @@ def test_a_differing_subject_is_recorded_as_a_difference():
     verdict, diff = rule_verdict(a, b, tol=1e-3)
     assert "subject" in diff
     assert verdict == "reconcilable", "one difference, so the model explains it"
+
+
+def test_a_qualifier_missing_on_one_side_is_unknown_not_different():
+    # one document records basis "real", the other says nothing. Counting that
+    # as a difference downgrades a genuine disagreement into one that looks
+    # explained. Same rule already used for periods and units.
+    a = _f(6.6, "PERCENT", period=FY26, quals={"basis": "real",
+                                               "vintage": "projection"})
+    b = _f(6.5, "PERCENT", period=FY26, quals={"vintage": "projection"})
+    verdict, diff = rule_verdict(a, b, tol=1e-3)
+    assert "basis" not in diff
+    assert verdict == "contradiction_candidate"
+
+
+def test_two_qualifiers_that_genuinely_disagree_still_count():
+    a = _f(6.6, "PERCENT", period=FY26, quals={"basis": "real"})
+    b = _f(6.5, "PERCENT", period=FY26, quals={"basis": "nominal"})
+    verdict, diff = rule_verdict(a, b, tol=1e-3)
+    assert diff["basis"] == ("real", "nominal")
+    assert verdict == "reconcilable"

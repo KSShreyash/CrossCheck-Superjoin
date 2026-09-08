@@ -27,8 +27,16 @@ def qualifier_diff(a: Fact, b: Fact) -> dict[str, tuple]:
     diff: dict[str, tuple] = {}
     for key in set(a.qualifiers) | set(b.qualifiers):
         left, right = a.qualifiers.get(key), b.qualifiers.get(key)
-        if left != right:
-            diff[key] = (left, right)
+        if left == right:
+            continue
+        # A qualifier recorded on one side and absent on the other is unknown,
+        # not contradicted. One document writing "real GDP" as a basis while
+        # another simply does not say is a gap in extraction, and treating it
+        # as a difference downgrades a genuine disagreement into something
+        # apparently explained. Same rule as periods and units throughout.
+        if left is None or right is None:
+            continue
+        diff[key] = (left, right)
     if a.entity_id and b.entity_id and a.entity_id != b.entity_id:
         # a real difference in what is being measured, so it belongs in the
         # comparison rather than being used to drop the pair silently
@@ -51,7 +59,8 @@ def rule_verdict(a: Fact, b: Fact, tol: float) -> tuple[str, dict]:
     if not units_compatible(a.canon_unit, b.canon_unit):
         # a rupee figure and a percentage are not in disagreement
         return "unrelated", diff
-    if values_agree(a.canon_value, b.canon_value, tol):
+    if values_agree(a.canon_value, b.canon_value, tol,
+                    a.value_raw, b.value_raw):
         return ("corroborates" if not diff else "corroborates_with_caveat"), diff
 
     # Values differ. Calling that a contradiction asserts the two facts are

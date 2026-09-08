@@ -109,11 +109,55 @@ def normalize_value(value_raw: str | None, unit_raw: str | None,
     return number * scale, "COUNT"
 
 
-def values_agree(a: float | None, b: float | None, tol: float) -> bool:
-    """Relative comparison, so printed rounding does not read as disagreement."""
+def significant_figures(raw: str | None) -> int | None:
+    """How precisely a number was printed, in significant figures.
+
+    "1.4" claims two, "1,429" claims four. Trailing zeros before the decimal
+    point are ambiguous in general and are not counted, which errs towards
+    treating a round number as less precise than it might be - the safe
+    direction, since it makes the comparison more forgiving rather than less.
+    """
+    if raw is None:
+        return None
+    digits = re.sub(r"[^\d.]", "", str(raw))
+    if not digits or not any(ch.isdigit() for ch in digits):
+        return None
+    if "." in digits:
+        stripped = digits.replace(".", "").lstrip("0")
+        return len(stripped) or None
+    stripped = digits.strip("0")
+    return len(stripped) or 1
+
+
+def _round_to(value: float, figures: int) -> float:
+    if value == 0 or figures <= 0:
+        return 0.0
+    from math import floor, log10
+    exponent = floor(log10(abs(value)))
+    return round(value, -(exponent - figures + 1))
+
+
+def values_agree(a: float | None, b: float | None, tol: float,
+                 a_raw: str | None = None, b_raw: str | None = None) -> bool:
+    """Whether two canonical values report the same quantity.
+
+    Relative tolerance absorbs ordinary rounding. Beyond that, two documents
+    routinely print the same figure at different precision - an earnings deck
+    says "1.4 Mn Tons" where the annual report says "1,429K tonnes" - and a
+    flat tolerance cannot express that. When the printed values are available,
+    they are also compared at whichever precision is the coarser of the two.
+    """
     if a is None or b is None:
         return False
     if a == b:
         return True
     denom = max(abs(a), abs(b))
-    return denom > 0 and abs(a - b) / denom <= tol
+    if denom > 0 and abs(a - b) / denom <= tol:
+        return True
+
+    fa, fb = significant_figures(a_raw), significant_figures(b_raw)
+    if fa and fb:
+        figures = min(fa, fb)
+        if figures >= 1 and _round_to(a, figures) == _round_to(b, figures):
+            return True
+    return False

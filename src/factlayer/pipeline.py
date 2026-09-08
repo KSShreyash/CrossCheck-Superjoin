@@ -276,13 +276,25 @@ def build_relations(conn: sqlite3.Connection, client,
                 reason_code = "different_period"
                 explanation = ("The two facts cover different periods, so their "
                                "values are not in conflict.")
-        elif max_model_calls is not None and calls >= max_model_calls:
-            # budget spent: record it honestly rather than guessing
-            final = "insufficient_context"
-            explanation = "adjudication budget exhausted before this pair"
-        elif exhausted:
-            final = "insufficient_context"
-            explanation = "no adjudication available; quota spent"
+        elif exhausted or (max_model_calls is not None
+                           and calls >= max_model_calls):
+            # No adjudication available, whether the budget was spent or never
+            # offered. Report what the rules can support rather than nothing.
+            #
+            # A contradiction candidate is not an absence of evidence: metric,
+            # period and unit all match and the values do not, which is a
+            # disagreement whether or not a model has blessed it. Filing that
+            # as "insufficient context" would hide a real finding behind a
+            # missing API call. It is recorded as unreviewed, not as agreed.
+            if rv == "contradiction_candidate":
+                final = "contradicts"
+                reason_code = "genuine_disagreement"
+                explanation = ("Same metric, period and unit; the values differ "
+                               "and no recorded qualifier distinguishes them. "
+                               "Decided by rule alone; no model review.")
+            else:
+                final = "insufficient_context"
+                explanation = "no adjudication available for this pair"
         else:
             calls += 1
             try:

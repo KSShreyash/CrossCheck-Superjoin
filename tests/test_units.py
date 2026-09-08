@@ -91,3 +91,34 @@ def test_case_one_survives_inconsistent_unit_reporting():
     from factlayer.normalize.units import units_compatible
     assert units_compatible(deck[1], report[1])
     assert values_agree(deck[0], report[0], tol=1e-3)
+
+
+def test_significant_figures_reads_printed_precision():
+    from factlayer.normalize.units import significant_figures
+    assert significant_figures("1.4") == 2
+    assert significant_figures("1,429") == 4
+    assert significant_figures("76") == 2
+    assert significant_figures("758") == 3
+    assert significant_figures("0.9") == 1
+    assert significant_figures(None) is None
+    assert significant_figures("n/a") is None
+
+
+def test_the_same_figure_printed_at_different_precision_agrees():
+    # the earnings deck rounds to two figures where the annual report gives four
+    deck, _ = normalize_value("1.4", "Mn Tons")
+    report, _ = normalize_value("1,429", "K tonnes")
+    assert not values_agree(deck, report, tol=1e-3), "a flat tolerance cannot"
+    assert values_agree(deck, report, tol=1e-3, a_raw="1.4", b_raw="1,429")
+
+    a, _ = normalize_value("76", "Rs Cr")
+    b, _ = normalize_value("758", "Mn")
+    assert values_agree(a, b, tol=1e-3, a_raw="76", b_raw="758")
+
+
+def test_a_real_disagreement_survives_the_precision_check():
+    # 0.9% against 1.6% is not a rounding of one another at any precision
+    assert not values_agree(0.9, 1.6, tol=1e-3, a_raw="0.9", b_raw="1.6")
+    assert not values_agree(6.5, 6.6, tol=1e-3, a_raw="6.5", b_raw="6.6")
+    assert not values_agree(7.454082e10, 8.141538e10, tol=1e-3,
+                            a_raw="74,540.82", b_raw="81,415.38")
