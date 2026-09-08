@@ -50,8 +50,15 @@ def _already_ingested(conn, doc_id: int) -> bool:
 
 
 def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
-           job_id: str | None = None, canonicalise_terms: bool = True) -> int:
-    """Ingest one PDF and return its document id. Re-ingesting is a no-op."""
+           job_id: str | None = None, canonicalise_terms: bool = True,
+           max_windows: int | None = None) -> int:
+    """Ingest one PDF and return its document id. Re-ingesting is a no-op.
+
+    `max_windows` reads only the densest N windows. The free tier allows 20
+    requests per day per model, so a 100-page document cannot be read
+    exhaustively; the density ordering means a budget spends itself on the
+    passages carrying figures rather than on narrative prose.
+    """
     pdf_path = Path(pdf_path)
     blocks, pages = extract_blocks(pdf_path)
     mark_boilerplate(blocks, settings.boilerplate_min_pages)
@@ -71,6 +78,8 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
                             settings.window_overlap)
     # densest first, so a rate limit costs the least valuable pages
     windows.sort(key=lambda w: -w.density)
+    if max_windows is not None:
+        windows = windows[:max_windows]
     _bump_job(conn, job_id, done=0, total=len(windows))
 
     facts: list[Fact] = []
@@ -138,6 +147,33 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
     _bump_job(conn, job_id, stage="done", done=len(windows), total=len(windows),
               facts=len(facts))
     return doc_id
+
+
+def canonicalise_corpus(conn: sqlite3.Connection, client) -> int:
+    """Canonicalise every stored subject and metric in one pass.
+
+    Ingesting document by document costs two calls per document. Doing it once
+    over everything costs two calls total, which matters when the free tier
+    allows twenty per day, and it is also the better answer: the model sees
+    every name at once instead of meeting them a document at a time.
+    """
+    rows = conn.execute("SELECT DISTINCT subject, metric FROM facts").fetchall()
+    if not rows:
+        return 0
+    subjects = sorted({r["subject"] for r in rows if r["subject"]})
+    metrics = sorted({r["metric"] for r in rows if r["metric"]})
+    entities = canonicalise(client, conn, "entity", subjects)
+    metric_ids = canonicalise(client, conn, "metric", metrics)
+
+    updated = 0
+    for r in conn.execute("SELECT id, subject, metric FROM facts").fetchall():
+        eid = (entities.get(r["subject"]) or (None, None))[0]
+        mid = (metric_ids.get(r["metric"]) or (None, None))[0]
+        conn.execute("UPDATE facts SET entity_id=?, metric_id=? WHERE id=?",
+                     (eid, mid, r["id"]))
+        updated += 1
+    conn.commit()
+    return updated
 
 
 def load_facts(conn) -> tuple[list[Fact], list[int], dict[int, dict]]:

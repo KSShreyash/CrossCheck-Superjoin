@@ -128,8 +128,23 @@ Deterministic, pure, and the most heavily tested part of the codebase. Four norm
 
 - **Value and unit** → canonical magnitude in a base unit. Handles lakh (1e5), crore
   (1e7), million, billion, currency symbols and spellings, percent, tonnes, and bare
-  counts. `₹81,415.38 million` and `₹8,142 Cr` both land on ~8.14e10 INR and match
-  within a relative tolerance that absorbs the rounding in the earnings deck.
+  counts. `₹81,415.38 million` and `₹8,142 Cr` both land on ~8.14e10 and match within a
+  relative tolerance that absorbs the rounding in the earnings deck.
+
+  Units arrive inconsistently and the design has to survive that. In a table the
+  currency is declared once in a header — "(₹ in Million)" — and never repeated in the
+  cells, so extraction frequently returns a bare `million`. Against real documents the
+  earnings deck reported EBITDA as `Rs. Cr` while the annual report reported revenue as
+  plain `million`, and a strict unit comparison refused to compare the two figures at
+  all. That would have killed the headline corroboration.
+
+  So a unit that reduces to nothing once scale words are stripped names a magnitude with
+  no dimension, and is recorded as `UNKNOWN` rather than assumed to be a count. Unknown
+  units stay comparable with anything; two *known* and different units, a rupee figure
+  against a percentage, remain incomparable. This is the same rule the period logic
+  follows: unknown is not the same as different. The currency is also recovered from the
+  verbatim evidence quote when the unit field omits it, since the quote is real document
+  text and the more reliable witness.
 - **Period** → `(start, end, kind)`. Indian FY24 is 2023-04-01 to 2024-03-31. The IMF
   writes `FY2025/26` for the year Indian filings call `FY26`. Also handles quarters,
   instants ("as on March 31, 2024"), and part-years ("nine months ended").

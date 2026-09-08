@@ -16,7 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from factlayer.config import settings                       # noqa: E402
 from factlayer.db import connect, init_schema                # noqa: E402
 from factlayer.llm.client import LLMClient, NoAPIKey         # noqa: E402
-from factlayer.pipeline import build_relations, ingest       # noqa: E402
+from factlayer.pipeline import (build_relations,               # noqa: E402
+                                canonicalise_corpus, ingest)
 
 
 def dry_run(pdfs) -> int:
@@ -40,11 +41,15 @@ def dry_run(pdfs) -> int:
         print(f"{pdf.name[:46]:46} {pages:>6} {len(windows):>8} {len(gaps):>5}")
 
     print(f"\n{len(pdfs)} documents, {total_pages} pages, {total_gaps} unreadable")
-    print(f"{total_windows} extraction calls, plus 2 canonicalisation calls per "
-          f"document ({2 * len(pdfs)})")
-    print(f"minimum before adjudication: ~{total_windows + 2 * len(pdfs)} requests")
-    print("\nAdjudication depends on how many pairs the rules cannot settle, so it "
-          "cannot be counted\nup front. Use --max-model-calls to cap it.")
+    print(f"{total_windows} extraction calls, plus 2 for canonicalising the corpus")
+    print(f"minimum before adjudication: ~{total_windows + 2} requests")
+    print("\nThe Gemini free tier allows 20 requests per day per model, so reading "
+          "every window\nof this corpus is not possible on one model in one day. "
+          "--max-windows-per-doc N\nspends the budget on the N densest windows of "
+          "each document; --max-model-calls\ncaps adjudication on top of that.")
+    for n in (2, 3, 5):
+        print(f"  --max-windows-per-doc {n}: ~{n * len(pdfs) + 2} requests before "
+              f"adjudication")
     return 0
 
 
@@ -56,6 +61,8 @@ def main() -> int:
                     help="cap adjudication calls to stay inside a free tier")
     ap.add_argument("--limit", type=int, default=None,
                     help="ingest only the first N documents")
+    ap.add_argument("--max-windows-per-doc", type=int, default=None,
+                    help="read only the N densest windows of each document")
     ap.add_argument("--dry-run", action="store_true",
                     help="report how many extraction calls this would cost, "
                          "without making any")
@@ -84,7 +91,9 @@ def main() -> int:
         print(f"[{n}/{len(pdfs)}] {pdf.name}", flush=True)
         t0 = time.time()
         try:
-            doc_id = ingest(conn, client, pdf)
+            doc_id = ingest(conn, client, pdf,
+                            canonicalise_terms=False,
+                            max_windows=args.max_windows_per_doc)
         except NoAPIKey as exc:
             print(f"    stopped: {exc}")
             return 2
@@ -100,7 +109,14 @@ def main() -> int:
         print(f"    {facts} facts ({dated} dated), {rejected} rejected, "
               f"{gaps} unreadable pages, {time.time() - t0:.1f}s")
 
-    print("\nbuilding relations...", flush=True)
+    print("\ncanonicalising the whole corpus in one pass...", flush=True)
+    try:
+        canonicalise_corpus(conn, client)
+    except Exception as exc:                       # noqa: BLE001
+        print(f"    canonicalisation incomplete: {type(exc).__name__}: "
+              f"{str(exc)[:120]}")
+
+    print("building relations...", flush=True)
     written = build_relations(conn, client, max_model_calls=args.max_model_calls)
     print(f"{written} relations in {time.time() - started:.1f}s total\n")
 

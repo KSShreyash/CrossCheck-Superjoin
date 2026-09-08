@@ -215,6 +215,15 @@ system simply declines to claim something it cannot support.
   model together, or every column is misattributed.
 - **No frontend build step.** Jinja templates and no JavaScript. The time is better spent
   on reasoning quality, and the brief warns that visualisation alone is not the solution.
+- **A pinned model, not `-latest`.** The model name is part of every cache key, so a
+  floating alias would keep replaying old responses under a name that now means
+  something else. `gemini-3.6-flash` was chosen after measuring: the newest flash model
+  exhausted its free-tier quota within a handful of calls, and the lite variants returned
+  their JSON wrapped in an array. Override with `FACTLAYER_MODEL`.
+- **Extraction is defensive about its own inputs.** The model returns array-wrapped JSON,
+  drops units that were declared in a table header, and transcribes `₹` as `I` often
+  enough to matter. Each of those is handled at the boundary rather than assumed away,
+  because the alternative is a system that works on the documents I happened to test.
 
 ### AI tools used
 
