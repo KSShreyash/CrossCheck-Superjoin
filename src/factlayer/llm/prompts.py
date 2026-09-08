@@ -27,6 +27,11 @@ Rules:
 - period_raw matters more than almost anything else. A fact with no period cannot be
   compared against anything, so look above and around the number for the period it
   belongs to, including a table header or a section heading, before giving up.
+- unit_raw matters just as much, and in tables the unit is usually NOT in the cell. It
+  is declared once, in a heading such as "(Rs in Million)" or "(₹ in Crore)" or a
+  column label, and applies to every number beneath it. Carry that declaration down to
+  each fact. A bare number with a null unit cannot be compared with anything, so report
+  the unit that governs the number even when the number itself is printed without one.
 - Prefer several precise facts over one broad one.
 - A table row is a fact per cell when the column header gives it distinct meaning.
 - Skip navigation text, page furniture, and legal disclaimers.

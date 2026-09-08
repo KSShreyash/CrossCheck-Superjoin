@@ -27,14 +27,33 @@ def _is_retryable(exc: Exception) -> bool:
     return any(marker in blob for marker in _RETRYABLE)
 
 
+def _unwrap(data):
+    """Some models wrap the object in a single-element array; unwrap it."""
+    if isinstance(data, list):
+        objects = [x for x in data if isinstance(x, dict)]
+        if len(objects) == 1:
+            return objects[0]
+        if objects:
+            # several partial objects: merge their list-valued keys
+            merged: dict = {}
+            for obj in objects:
+                for k, v in obj.items():
+                    if isinstance(v, list):
+                        merged.setdefault(k, []).extend(v)
+                    else:
+                        merged.setdefault(k, v)
+            return merged
+    return data
+
+
 def _loads_lenient(text: str) -> dict:
     try:
-        return json.loads(text)
+        return _unwrap(json.loads(text))
     except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", text, re.S)
+        m = re.search(r"[\[{].*[\]}]", text, re.S)
         if m:
             try:
-                return json.loads(m.group(0))
+                return _unwrap(json.loads(m.group(0)))
             except json.JSONDecodeError:
                 pass
         raise BadModelJSON(

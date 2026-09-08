@@ -2,6 +2,7 @@ import re
 from collections import defaultdict
 
 from .models import Fact
+from .normalize.units import units_compatible
 
 _STOP = {"of", "from", "the", "in", "for", "and", "a", "on", "to"}
 

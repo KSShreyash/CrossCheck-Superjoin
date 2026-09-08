@@ -45,3 +45,16 @@ def test_rate_limit_is_retryable_but_bad_json_is_not():
     assert _is_retryable(Exception("503 Service Unavailable"))
     assert not _is_retryable(BadModelJSON("truncated"))
     assert not _is_retryable(ValueError("bad argument"))
+
+
+def test_array_wrapped_json_is_unwrapped():
+    # some models return [{"facts": [...]}] instead of {"facts": [...]}
+    from factlayer.llm.client import _loads_lenient
+    assert _loads_lenient('[{"facts": [{"metric": "revenue"}]}]') == \
+        {"facts": [{"metric": "revenue"}]}
+
+
+def test_split_objects_are_merged_not_dropped():
+    from factlayer.llm.client import _loads_lenient
+    out = _loads_lenient('[{"facts": [{"a": 1}]}, {"facts": [{"b": 2}]}]')
+    assert out["facts"] == [{"a": 1}, {"b": 2}]

@@ -1,5 +1,5 @@
 from ..models import Fact
-from ..normalize.units import values_agree
+from ..normalize.units import units_compatible, values_agree
 
 
 # Qualifiers describe the measurement; provenance describes who reported it.
@@ -32,7 +32,7 @@ def qualifier_diff(a: Fact, b: Fact) -> dict[str, tuple]:
     if (a.period_start, a.period_end) != (b.period_start, b.period_end):
         diff["period"] = ((a.period_start, a.period_end),
                           (b.period_start, b.period_end))
-    if a.canon_unit != b.canon_unit:
+    if not units_compatible(a.canon_unit, b.canon_unit):
         diff["unit"] = (a.canon_unit, b.canon_unit)
     return diff
 
@@ -44,7 +44,7 @@ def rule_verdict(a: Fact, b: Fact, tol: float) -> tuple[str, dict]:
     if a.claim_type == "attribute" or b.claim_type == "attribute" \
        or a.canon_value is None or b.canon_value is None:
         return "needs_model", diff
-    if a.canon_unit != b.canon_unit:
+    if not units_compatible(a.canon_unit, b.canon_unit):
         # a rupee figure and a percentage are not in disagreement
         return "unrelated", diff
     if values_agree(a.canon_value, b.canon_value, tol):

@@ -115,7 +115,7 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
     facts = dedupe_facts(facts)
 
     for f in facts:
-        nv = normalize_value(f.value_raw, f.unit_raw)
+        nv = normalize_value(f.value_raw, f.unit_raw, f.evidence_quote)
         if nv:
             f.canon_value, f.canon_unit = nv
             f.value_num = nv[0]

@@ -14,7 +14,7 @@ class Settings:
     db_path: Path = Path(os.getenv("FACTLAYER_DB", ROOT / "factlayer.sqlite"))
     upload_dir: Path = ROOT / "uploads"
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY")
-    model: str = os.getenv("FACTLAYER_MODEL", "gemini-2.0-flash")
+    model: str = os.getenv("FACTLAYER_MODEL", "gemini-3.6-flash")
     embed_model: str = "text-embedding-004"
     value_tolerance: float = 1e-3        # relative, absorbs printed rounding
     window_chars: int = 12000            # long-context extraction window
