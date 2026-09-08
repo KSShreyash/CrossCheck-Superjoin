@@ -59,9 +59,11 @@ which matters because the quota is per model.
 Recall is therefore bounded by budget rather than by capability. Raise the cap and it
 reads more; nothing in the architecture changes.
 
-The two starter datasets are independent, and neither alone shows everything: the
-Delhivery documents carry cases 1, 3 and 4, while the genuine contradiction in case 2
-lives in the macroeconomic set. Ingest both.
+The two starter datasets are independent. All four cases below happen to come from the
+Delhivery documents, but the macroeconomic set is where the period normaliser earns its
+keep: the RBI writes `2025-26` for the fiscal year the IMF writes `FY2025/26`, and
+without resolving both to the same dates their growth projections are never compared at
+all. Ingest both.
 
 Ingest order matters if you intend to reuse the committed cache. Canonicalisation is
 incremental, so its prompt reflects what was ingested before it; the script sorts
@@ -170,7 +172,7 @@ canonicalisation — the over-merge risk named in the design, observed in practi
 | --- | --- |
 | documents / pages | 6 / 511 |
 | facts stored | 701, **all 701 resolved to a page and verified against it** |
-| facts carrying a period | 480 (68%) |
+| facts carrying a period | 471 (67%) |
 | relations | 1,155 |
 | corroborates / reconciled / contradicts | 218 / 182 / 45 |
 | of those, across documents | 18 / 17 / 5 |
