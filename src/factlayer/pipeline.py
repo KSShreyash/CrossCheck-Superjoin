@@ -217,6 +217,19 @@ def _fetch_quote(conn, fact_id: int) -> str:
     return row["quote"] if row else ""
 
 
+def _write_relation(conn, fact_a, fact_b, rule_v, model_v, final, reason,
+                    explanation, diff, transform, verified, agreed, confidence):
+    conn.execute(
+        "INSERT OR REPLACE INTO relations(fact_a,fact_b,rule_verdict,"
+        "model_verdict,final_verdict,reason_code,explanation,qualifier_diff,"
+        "claimed_transform,verified,agreed,confidence) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (fact_a, fact_b, rule_v, model_v, final, reason, explanation,
+         json.dumps(diff, default=str),
+         json.dumps(transform) if transform else None,
+         verified, agreed, confidence))
+
+
 def build_relations(conn: sqlite3.Connection, client,
                     max_model_calls: int | None = None) -> int:
     """Classify every candidate pair; ask the model only where rules cannot."""
@@ -227,8 +240,27 @@ def build_relations(conn: sqlite3.Connection, client,
         f.evidence_quote = _fetch_quote(conn, fid)
 
     pairs = candidate_pairs(facts, settings.max_pairs_per_fact)
+
+    # A budget spent first-come-first-served goes on whatever happens to sort
+    # early, which is mostly one document arguing with itself. Judge the most
+    # informative pairs first: a disagreement between two documents is worth
+    # far more than a duplicated row inside one.
+    def priority(pair: tuple[int, int]) -> tuple:
+        a, b = facts[pair[0]], facts[pair[1]]
+        verdict, _ = rule_verdict(a, b, settings.value_tolerance)
+        rank = {"contradiction_candidate": 0, "reconcilable": 1,
+                "needs_model": 2}.get(verdict, 9)
+        cross = 0 if a.doc_id != b.doc_id else 1
+        # Crossing documents outranks the kind of disagreement. One document
+        # arguing with itself is usually a period the extraction missed, and
+        # there are many of those; two documents disagreeing is the thing this
+        # system exists to surface, and there are few.
+        return (cross, rank, -(a.confidence + b.confidence))
+
+    pairs = sorted(pairs, key=priority)
     calls = 0
     written = 0
+    exhausted = False
 
     for i, j in pairs:
         a, b = facts[i], facts[j]
@@ -248,9 +280,24 @@ def build_relations(conn: sqlite3.Connection, client,
             # budget spent: record it honestly rather than guessing
             final = "insufficient_context"
             explanation = "adjudication budget exhausted before this pair"
+        elif exhausted:
+            final = "insufficient_context"
+            explanation = "no adjudication available; quota spent"
         else:
             calls += 1
-            out = adjudicate(client, a, b, rv, diff, meta[ids[i]], meta[ids[j]])
+            try:
+                out = adjudicate(client, a, b, rv, diff,
+                                 meta[ids[i]], meta[ids[j]])
+            except Exception as exc:               # noqa: BLE001
+                # Running out mid-pass must not discard the pairs already
+                # classified, nor the many that rules alone can settle.
+                exhausted = True
+                final = "insufficient_context"
+                explanation = f"no adjudication available: {type(exc).__name__}"
+                _write_relation(conn, ids[i], ids[j], rv, None, final, None,
+                                explanation, diff, None, None, None, None)
+                written += 1
+                continue
             model_verdict = out["verdict"]
             reason_code = out["reason_code"]
             explanation = out["explanation"]
@@ -281,15 +328,9 @@ def build_relations(conn: sqlite3.Connection, client,
                 explanation = (f"{explanation} [held: {', '.join(material)} differs, "
                                "so the two may not be comparable]")
 
-        conn.execute(
-            "INSERT OR REPLACE INTO relations(fact_a,fact_b,rule_verdict,"
-            "model_verdict,final_verdict,reason_code,explanation,qualifier_diff,"
-            "claimed_transform,verified,agreed,confidence) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (ids[i], ids[j], rv, model_verdict, final, reason_code, explanation,
-             json.dumps(diff, default=str),
-             json.dumps(transform) if transform else None,
-             verified, agreed, confidence))
+        _write_relation(conn, ids[i], ids[j], rv, model_verdict, final,
+                        reason_code, explanation, diff, transform, verified,
+                        agreed, confidence)
         written += 1
 
     conn.commit()

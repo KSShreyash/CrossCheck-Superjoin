@@ -255,3 +255,44 @@ def test_an_interrupted_ingest_is_retried_not_skipped(tmp_path, make_pdf):
     assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
     # and blocks are not duplicated by the retry
     assert conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0] == 1
+
+
+def test_a_limited_budget_is_spent_on_the_most_informative_pairs(tmp_path):
+    # a cross-document disagreement is worth far more than a duplicated row
+    # inside one document, so it must not lose the budget to sort order
+    from factlayer.pipeline import build_relations
+    conn = connect(tmp_path / "t.sqlite")
+    init_schema(conn)
+    conn.execute("INSERT INTO documents(id,sha256,filename,page_count) "
+                 "VALUES (1,'a','a.pdf',1),(2,'b','b.pdf',1)")
+    # same-document disagreements on one metric, and a cross-document
+    # disagreement on another, so the two groups never pair with each other
+    rows = [
+        (1, 1, "same doc A", "8.0", "tonnage"), (2, 1, "same doc B", "9.0", "tonnage"),
+        (3, 1, "same doc C", "7.0", "tonnage"), (4, 1, "same doc D", "6.0", "tonnage"),
+        (5, 1, "rbi", "6.5", "growth"), (6, 2, "imf", "6.6", "growth"),
+    ]
+    for fid, doc, subj, val, metric in rows:
+        conn.execute(
+            "INSERT INTO facts(id,doc_id,subject,metric,value_raw,unit_raw,"
+            "period_raw,qualifiers,claim_type,confidence,canon_value,canon_unit,"
+            "period_start,period_end,entity_id,metric_id) VALUES "
+            "(?,?,?,?,?,'per cent','FY26','{}','measurement',0.9,?,"
+            "'PERCENT','2025-04-01','2026-03-31','india',?)",
+            (fid, doc, subj, metric, val, float(val), metric))
+        conn.execute("INSERT INTO evidence(fact_id,quote,page_no) VALUES (?,?,1)",
+                     (fid, f"{subj} {val}"))
+    conn.commit()
+
+    seen = []
+
+    class Model:
+        def complete_json(self, prompt, version, **kw):
+            seen.append(prompt)
+            return {"verdict": "contradicts", "reason_code": "x",
+                    "explanation": "y", "confidence": 0.9}
+
+    build_relations(conn, Model(), max_model_calls=1)
+    assert len(seen) == 1, "exactly one call was allowed"
+    assert "rbi" in seen[0] and "imf" in seen[0], \
+        "the single call went to the cross-document pair, not a same-doc twin"
