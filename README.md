@@ -41,10 +41,23 @@ python scripts/ingest_starter.py ../starter-datasets/starter-datasets
 python scripts/show_cases.py          # prints the four cases with their evidence
 ```
 
-`--dry-run` costs the run before spending any quota on it. For the starter set it
-reports 158 extraction calls plus 12 for canonicalisation, which matters on a free tier
-where the daily allowance is the binding constraint. `--max-model-calls` caps
-adjudication, and `--limit N` ingests only the first N documents.
+**The free tier allows 20 requests per day, per model.** Not per minute — I found this
+out by hitting it mid-ingest. The full corpus needs about 160 requests, so reading all
+511 pages on one model would take eight days. Budget flags exist because of that:
+
+```bash
+# read the 2 densest windows of each document: about 14 requests
+python scripts/ingest_starter.py ../starter-datasets/starter-datasets \
+    --max-windows-per-doc 2 --max-model-calls 4
+```
+
+`--dry-run` prices a run before it happens. `--max-windows-per-doc N` spends the budget
+on the N densest windows of each document, `--max-model-calls` caps adjudication, and
+`--limit N` ingests only the first N documents. `FACTLAYER_MODEL` selects the model,
+which matters because the quota is per model.
+
+Recall is therefore bounded by budget rather than by capability. Raise the cap and it
+reads more; nothing in the architecture changes.
 
 The two starter datasets are independent, and neither alone shows everything: the
 Delhivery documents carry cases 1, 3 and 4, while the genuine contradiction in case 2

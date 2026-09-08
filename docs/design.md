@@ -310,6 +310,34 @@ explanation, and whether the two agreed. That single screen is the demo.
   by pre-seeding the cache. Tests never touch the network.
 - A grounding test asserting that a fabricated `evidence_quote` is rejected.
 
+## The budget is the design constraint
+
+The Gemini free tier allows **20 generate requests per day, per model, per project**.
+Not per minute. That single number shaped more of this system than any other
+consideration, and it was discovered the honest way — by hitting it mid-ingest.
+
+The corpus is 511 pages and segments into 158 extraction windows. Reading all of it
+would take eight days on one model. So the system is built to spend a budget rather
+than to assume one does not exist:
+
+- **Windows are ordered by fact density and the budget is spent from the top.** The
+  ordering already existed so that an interrupted run would lose the least valuable
+  pages; under a hard quota the same ordering lets a run be deliberately truncated.
+  `--max-windows-per-doc N` reads the N densest windows of each document, taking the
+  passages carrying figures and skipping narrative prose.
+- **Canonicalisation is one pass over the corpus, not one per document.** It cost two
+  calls per document and now costs two in total. That was forced by the budget and is
+  also the better answer: the model sees every subject and metric at once instead of
+  meeting them a document at a time.
+- **Pairs the rules can settle never reach the model at all**, which is what makes the
+  adjudication budget go far enough to matter.
+- **`--dry-run` prices a run before it happens**, against the real quota.
+
+The cost of the compromise is honest and worth stating: with a per-document window cap,
+the system reads the densest sections rather than the whole document, so recall is
+bounded by budget rather than by capability. Nothing about the architecture changes when
+the quota does — raise the cap and it reads more.
+
 ## Running without a key
 
 Every model call is cached by content hash, and the cache for the starter documents is
