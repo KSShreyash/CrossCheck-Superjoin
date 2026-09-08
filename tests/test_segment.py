@@ -1,4 +1,4 @@
-from factlayer.ingest.segment import build_windows, density_score
+from factlayer.ingest.segment import build_windows, density_score, split_window
 from factlayer.models import Block
 
 
@@ -38,3 +38,23 @@ def test_block_spans_survive_newlines_inside_a_block():
     quote = "81,415.38 million"
     at = w.text.index(quote)
     assert start <= at and at + len(quote) <= end   # quote belongs to block 0
+
+
+def test_split_window_halves_at_a_block_boundary():
+    blocks = [Block(1, i, f"block {i} text\nwith a newline", (0, 0, 1, 1))
+              for i in range(4)]
+    w = build_windows(blocks, doc_id=1, window_chars=10_000, overlap=0)[0]
+    halves = split_window(w)
+    assert len(halves) == 2
+    assert [len(h.block_ids) for h in halves] == [2, 2]
+    # spans must be recomputed against each half's own text, not inherited
+    for h in halves:
+        for bid, (s, e) in zip(h.block_ids, h.block_spans):
+            assert h.text[s:e] == blocks[bid].text
+    assert halves[0].block_ids + halves[1].block_ids == w.block_ids
+
+
+def test_split_window_declines_when_there_is_nothing_to_split():
+    blocks = [Block(1, 0, "only one block", (0, 0, 1, 1))]
+    w = build_windows(blocks, doc_id=1, window_chars=10_000, overlap=0)[0]
+    assert split_window(w) == []

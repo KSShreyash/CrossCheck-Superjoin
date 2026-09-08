@@ -29,6 +29,26 @@ def _emit(doc_id: int, index: int, ids: list[int], parts: list[str]) -> Window:
                   block_spans=spans, density=density_score(text))
 
 
+def split_window(window: Window) -> list[Window]:
+    """Halve a window at a block boundary, preserving block identity.
+
+    Used when a window produces more facts than the model's output limit can
+    hold. The densest windows are the likeliest to truncate and the most worth
+    keeping, so they are retried in halves rather than discarded.
+    """
+    if len(window.block_ids) < 2:
+        return []
+    mid = len(window.block_ids) // 2
+    parts = [window.text[s:e] for s, e in window.block_spans]
+    halves = []
+    for offset, (ids, texts) in enumerate((
+            (window.block_ids[:mid], parts[:mid]),
+            (window.block_ids[mid:], parts[mid:]))):
+        halves.append(_emit(window.doc_id, window.index * 10 + offset,
+                            list(ids), list(texts)))
+    return halves
+
+
 def build_windows(blocks: list[Block], doc_id: int, window_chars: int,
                   overlap: int) -> list[Window]:
     usable = [(i, b) for i, b in enumerate(blocks) if not b.is_boilerplate]

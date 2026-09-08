@@ -8,7 +8,7 @@ from .extract import dedupe_facts, extract_facts
 from .ingest.boilerplate import mark_boilerplate
 from .ingest.gaps import find_gaps
 from .ingest.pdf import extract_blocks, file_sha256
-from .ingest.segment import build_windows
+from .ingest.segment import build_windows, split_window
 from .llm.client import BadModelJSON, NoAPIKey
 from .models import Fact
 from .normalize.canon import canonicalise
@@ -77,17 +77,37 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
     rejected: list[dict] = []
     window_of: dict[int, object] = {}
 
-    for n, window in enumerate(windows, start=1):
+    def pull(window, allow_split=True):
+        """Extract from one window, halving it once if the output truncated.
+
+        Each fact is registered against the window it was actually read from,
+        because its span is relative to that window's text. Attributing a
+        fact from a half to the parent would resolve its evidence to the
+        wrong blocks.
+        """
         try:
             got, bad = extract_facts(client, window, doc_id)
+            for f in got:
+                window_of[id(f)] = window
+            return got, bad
         except NoAPIKey:
             raise                    # nothing cached and no key: stop loudly
         except BadModelJSON as exc:
-            rejected.append({"payload": {"window_index": window.index},
-                             "reason": f"unusable model output: {exc}"})
-            continue                 # this window yields nothing; the rest proceed
-        for f in got:
-            window_of[id(f)] = window
+            halves = split_window(window) if allow_split else []
+            if not halves:
+                return [], [{"payload": {"window_index": window.index},
+                             "reason": f"unusable model output: {exc}"}]
+            # a dense window can produce more facts than the output limit
+            # holds; those are the windows most worth recovering
+            got, bad = [], []
+            for half in halves:
+                g, b = pull(half, allow_split=False)
+                got.extend(g)
+                bad.extend(b)
+            return got, bad
+
+    for n, window in enumerate(windows, start=1):
+        got, bad = pull(window)
         facts.extend(got)
         rejected.extend(bad)
         _bump_job(conn, job_id, done=n, total=len(windows), facts=len(facts))
