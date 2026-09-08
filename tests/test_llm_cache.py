@@ -39,10 +39,11 @@ def test_fenced_json_is_recovered():
     assert _loads_lenient('```json\n{"facts": []}\n```') == {"facts": []}
 
 
-def test_rate_limit_is_retryable_but_bad_json_is_not():
+def test_only_server_side_failures_are_retried():
     from factlayer.llm.client import BadModelJSON, _is_retryable
-    assert _is_retryable(Exception("429 Resource has been exhausted"))
     assert _is_retryable(Exception("503 Service Unavailable"))
+    # a quota refusal rotates rather than retrying: see the test below
+    assert not _is_retryable(Exception("429 Resource has been exhausted"))
     assert not _is_retryable(BadModelJSON("truncated"))
     assert not _is_retryable(ValueError("bad argument"))
 
@@ -66,15 +67,24 @@ DAILY = ('429 You exceeded your current quota. '
 PER_MINUTE = '429 Resource has been exhausted (e.g. check quota).'
 
 
-def test_daily_quota_is_never_retried():
-    # every attempt counts against the allowance, so retrying a daily limit
-    # spends more requests to be told the same thing
-    from factlayer.llm.client import _is_daily_quota, _is_retryable
-    assert _is_daily_quota(Exception(DAILY))
-    assert not _is_retryable(Exception(DAILY))
-    # a transient limit still is
-    assert not _is_daily_quota(Exception(PER_MINUTE))
-    assert _is_retryable(Exception(PER_MINUTE))
+def test_quota_errors_rotate_instead_of_sleeping():
+    # Every attempt is itself a counted request, so sleeping and retrying
+    # spends more of exactly the thing that just ran out. Per-minute and
+    # per-day limits are not reliably distinguishable and the right response
+    # is the same for both: move to the next model.
+    from factlayer.llm.client import _is_quota, _is_retryable
+    for message in (DAILY, PER_MINUTE):
+        assert _is_quota(Exception(message))
+        assert not _is_retryable(Exception(message))
+
+
+def test_server_side_failures_are_still_waited_out():
+    # these cost no allowance, so backing off is the right move
+    from factlayer.llm.client import _is_quota, _is_retryable
+    for message in ("503 Service Unavailable", "500 Internal error",
+                    "deadline exceeded"):
+        assert not _is_quota(Exception(message))
+        assert _is_retryable(Exception(message))
 
 
 def _rotating_client(tmp_path, behaviour):

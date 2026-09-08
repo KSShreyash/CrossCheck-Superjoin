@@ -18,27 +18,40 @@ class DailyQuotaExhausted(RuntimeError):
     """This model's daily allowance is gone; waiting will not help."""
 
 
-# transient conditions worth waiting out
-_RETRYABLE = ("429", "rate limit", "resource_exhausted", "quota", "exhausted",
-              "503", "unavailable", "500", "internal", "deadline")
+# server-side hiccups: worth waiting out, and they cost no allowance
+_RETRYABLE = ("503", "unavailable", "500", "internal", "deadline",
+              "timeout", "connection")
 
-# markers that identify a per-DAY limit rather than a per-minute one
-_DAILY = ("perday", "per day", "requestsperday", "generaterequestsperday",
-          "quota_id: \"generaterequestsperdayperprojectpermodel")
+# anything that means "you have had your share"
+_QUOTA = ("429", "rate limit", "resource_exhausted", "resourceexhausted",
+          "quota", "exhausted")
+
+
+def _is_quota(exc: Exception) -> bool:
+    """Any refusal on grounds of allowance, per-minute or per-day alike.
+
+    The two are not reliably distinguishable - the daily quota id is only
+    sometimes attached - and under a per-model allowance the response is the
+    same either way. Waiting is the wrong move: every attempt is itself a
+    counted request, so sleeping and retrying spends more of exactly the thing
+    that just ran out. Rotating to the next model costs nothing and may
+    succeed immediately.
+    """
+    if isinstance(exc, (BadModelJSON, NoAPIKey, DailyQuotaExhausted)):
+        return False
+    blob = f"{type(exc).__name__} {exc}".lower()
+    return any(marker in blob for marker in _QUOTA)
 
 
 def _is_daily_quota(exc: Exception) -> bool:
-    blob = f"{exc}".lower().replace("-", "")
-    return any(marker.replace("-", "") in blob for marker in _DAILY)
+    return _is_quota(exc)
 
 
 def _is_retryable(exc: Exception) -> bool:
     if isinstance(exc, (BadModelJSON, NoAPIKey, DailyQuotaExhausted)):
         return False
-    # Every attempt counts against the allowance, so retrying a daily quota
-    # error spends four more requests to be told the same thing.
-    if _is_daily_quota(exc):
-        return False
+    if _is_quota(exc):
+        return False        # rotate instead of sleeping
     blob = f"{type(exc).__name__} {exc}".lower()
     return any(marker in blob for marker in _RETRYABLE)
 
