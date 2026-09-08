@@ -5,6 +5,8 @@ venv/
 .env
 *.sqlite
 *.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 *.db
 uploads/
 .pytest_cache/
