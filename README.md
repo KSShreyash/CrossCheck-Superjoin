@@ -36,18 +36,50 @@ A free key comes from <https://aistudio.google.com/apikey>.
 Then either upload a PDF through the web interface, or run the whole starter set:
 
 ```bash
+python scripts/ingest_starter.py ../starter-datasets/starter-datasets --dry-run
 python scripts/ingest_starter.py ../starter-datasets/starter-datasets
 python scripts/show_cases.py          # prints the four cases with their evidence
 ```
+
+`--dry-run` costs the run before spending any quota on it. For the starter set it
+reports 158 extraction calls plus 12 for canonicalisation, which matters on a free tier
+where the daily allowance is the binding constraint. `--max-model-calls` caps
+adjudication, and `--limit N` ingests only the first N documents.
+
+The two starter datasets are independent, and neither alone shows everything: the
+Delhivery documents carry cases 1, 3 and 4, while the genuine contradiction in case 2
+lives in the macroeconomic set. Ingest both.
 
 Ingest order matters if you intend to reuse the committed cache. Canonicalisation is
 incremental, so its prompt reflects what was ingested before it; the script sorts
 filenames so the order is reproducible.
 
+To see the interface with data in it before setting up a key at all:
+
+```bash
+python scripts/demo_fixture.py
+FACTLAYER_DB=demo.sqlite uvicorn factlayer.api:app
+```
+
+That writes four small PDFs, runs the real pipeline against a fixed stub model, and
+produces one cross-document corroboration, one genuine contradiction and several
+context-reconciled pairs. It is a smoke test, not a result: the documents are synthetic
+and clearly named as such.
+
+Verify the central claim yourself — that every stored fact quotes text that is really
+in its source:
+
+```bash
+python scripts/audit_grounding.py
+```
+
+It re-reads each piece of evidence and looks for it in the stored text of the page it
+cites, rather than trusting the offsets recorded at extraction time.
+
 Tests:
 
 ```bash
-pytest            # 96 tests, no network access required
+pytest            # full suite, no network access required
 ```
 
 ---
