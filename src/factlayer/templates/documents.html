@@ -7,9 +7,13 @@
   These six are the <b>starter dataset supplied with the assignment</b>, already
   processed. Nothing about them is hard-coded: the cached model responses ship so the
   results can be reviewed without an API key, but every fact and relation below is
-  recomputed by the pipeline on each run. Upload any PDF to run it through the same path
-  {% if not stats.has_api_key %}— though a document the cache has never seen needs a
-  <code>GEMINI_API_KEY</code>, since it genuinely has to be read{% endif %}.
+  recomputed by the pipeline on each run.
+  {%- if stats.has_api_key %}
+  Upload any PDF to run it through the same path.
+  {%- else %}
+  Upload any PDF to run it through the same path — though a document the cache has
+  never seen needs a <code>GEMINI_API_KEY</code>, since it genuinely has to be read.
+  {%- endif %}
 </p>
 
 <form class="upload" method="post" action="/upload" enctype="multipart/form-data">
