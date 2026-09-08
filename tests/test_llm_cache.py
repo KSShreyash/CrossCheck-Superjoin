@@ -28,7 +28,9 @@ def test_key_is_stable_and_sensitive():
     assert cache_key("m", "v1", "a") != cache_key("n", "v1", "a")
 
 
-def test_truncated_json_raises_a_named_error():
+def test_truncated_json_raises_rather_than_returning_a_fragment():
+    # the inner objects parse fine on their own; returning one would look like
+    # success while carrying none of the payload
     from factlayer.llm.client import BadModelJSON, _loads_lenient
     with pytest.raises(BadModelJSON):
         _loads_lenient('{"facts": [{"metric": "revenue"}, {"metric": "EBI')
@@ -143,3 +145,31 @@ def test_a_cached_answer_under_any_rotated_model_is_reused(tmp_path):
     put(client.conn, cache_key("m2", "v1", "PROMPT"), {"facts": [{"m": 1}]})
     assert client.complete_json("PROMPT", "v1") == {"facts": [{"m": 1}]}
     assert calls == [], "rotation must not re-ask a question already paid for"
+
+
+def test_concatenated_objects_are_merged_not_discarded():
+    # a greedy match from the first brace to the last joins two valid objects
+    # into one invalid blob and loses both
+    from factlayer.llm.client import _loads_lenient
+    out = _loads_lenient('{"facts": [{"a": 1}]}\n{"facts": [{"b": 2}]}')
+    assert out["facts"] == [{"a": 1}, {"b": 2}]
+
+
+def test_prose_around_the_json_is_ignored():
+    from factlayer.llm.client import _loads_lenient
+    out = _loads_lenient('Here is the JSON requested:\n'
+                         '```json\n{"facts": [{"a": 1}]}\n```\nHope that helps!')
+    assert out["facts"] == [{"a": 1}]
+
+
+def test_a_truly_unusable_response_still_raises_with_a_sample():
+    from factlayer.llm.client import BadModelJSON, _loads_lenient
+    with pytest.raises(BadModelJSON) as e:
+        _loads_lenient("I am afraid I cannot help with that request.")
+    assert "cannot help" in str(e.value), "the sample must aid diagnosis"
+
+
+def test_a_half_written_object_does_not_swallow_the_good_one():
+    from factlayer.llm.client import _loads_lenient
+    out = _loads_lenient('{"facts": [{"a": 1}]} {"facts": [{"b": ')
+    assert out["facts"] == [{"a": 1}]

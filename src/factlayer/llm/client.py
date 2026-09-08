@@ -75,19 +75,57 @@ def _unwrap(data):
     return data
 
 
+def _scan_values(text: str) -> list:
+    """Every complete JSON value in the text, in order.
+
+    Models do not reliably return one object. They return it fenced in
+    markdown, wrapped in an array, prefixed with a sentence, or as several
+    objects back to back. Scanning for complete values handles all of those,
+    where a single greedy match would join two valid objects into one invalid
+    blob and throw the lot away.
+    """
+    decoder = json.JSONDecoder()
+    values, i, n = [], 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch not in "[{":
+            i += 1
+            continue
+        try:
+            value, end = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            i += 1
+            continue
+        values.append(value)
+        i = end
+    return values
+
+
+def _is_envelope(value) -> bool:
+    """A result of the shape the prompts ask for: {"facts": [...]} and such.
+
+    Salvaging has to stop short of accepting a fragment. A response truncated
+    inside its list leaves complete inner objects lying around, and returning
+    one of those would look like success while carrying none of the payload.
+    """
+    return isinstance(value, dict) and any(
+        isinstance(v, list) for v in value.values())
+
+
 def _loads_lenient(text: str) -> dict:
     try:
         return _unwrap(json.loads(text))
     except json.JSONDecodeError:
-        m = re.search(r"[\[{].*[\]}]", text, re.S)
-        if m:
-            try:
-                return _unwrap(json.loads(m.group(0)))
-            except json.JSONDecodeError:
-                pass
+        envelopes = [v for v in _scan_values(text)
+                     if _is_envelope(v) or _is_envelope(_unwrap(v))]
+        if envelopes:
+            return _unwrap(envelopes if len(envelopes) > 1 else envelopes[0])
+        # Keep a sample. Without it a failure is only a character count, and
+        # "truncated" and "the model wrote prose" look identical in the log.
+        sample = re.sub(r"\s+", " ", text)[:240]
         raise BadModelJSON(
-            f"could not parse model output ({len(text)} chars); "
-            "most likely truncated at the output token limit")
+            f"could not parse model output ({len(text)} chars). "
+            f"Starts: {sample!r}")
 
 
 class LLMClient:
