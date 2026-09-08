@@ -78,7 +78,18 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
         _bump_job(conn, job_id, stage="already ingested", done=1, total=1)
         return doc_id
 
-    # a previous attempt may have stored blocks before running out of quota
+    # Clear everything the previous attempt left behind. Blocks are recreated
+    # with new row ids, so facts and evidence from an earlier run would point
+    # at rows that no longer exist - and would also survive alongside the new
+    # facts, duplicating every relation they take part in.
+    conn.execute(
+        "DELETE FROM relations WHERE fact_a IN "
+        "(SELECT id FROM facts WHERE doc_id=?) OR fact_b IN "
+        "(SELECT id FROM facts WHERE doc_id=?)", (doc_id, doc_id))
+    conn.execute("DELETE FROM evidence WHERE fact_id IN "
+                 "(SELECT id FROM facts WHERE doc_id=?)", (doc_id,))
+    conn.execute("DELETE FROM facts WHERE doc_id=?", (doc_id,))
+    conn.execute("DELETE FROM rejected_facts WHERE doc_id=?", (doc_id,))
     conn.execute("DELETE FROM blocks WHERE doc_id=?", (doc_id,))
     conn.execute("DELETE FROM gaps WHERE doc_id=?", (doc_id,))
     conn.commit()

@@ -13,6 +13,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+# Windows defaults stdout to cp1252, which cannot encode the rupee sign these
+# documents are full of. Redirecting output to a file would otherwise crash.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 from factlayer.config import (key_list, model_list,          # noqa: E402
                               settings)
 from factlayer.db import connect, init_schema                # noqa: E402

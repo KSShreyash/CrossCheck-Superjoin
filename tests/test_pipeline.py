@@ -296,3 +296,27 @@ def test_a_limited_budget_is_spent_on_the_most_informative_pairs(tmp_path):
     assert len(seen) == 1, "exactly one call was allowed"
     assert "rbi" in seen[0] and "imf" in seen[0], \
         "the single call went to the cross-document pair, not a same-doc twin"
+
+
+def test_reingesting_replaces_facts_rather_than_accumulating(tmp_path, make_pdf):
+    # Blocks are recreated with new row ids on a retry, so facts left over from
+    # an earlier attempt point at rows that no longer exist - and survive
+    # alongside the new ones, duplicating every relation they appear in.
+    pdf = make_pdf([[LINE]])
+    conn = connect(tmp_path / "t.sqlite")
+    init_schema(conn)
+    client = LLMClient(conn, api_key=None, model="m")
+    _seed(conn, pdf, [_fact("81,415.38", "Rs million", "Rs 81,415.38 million")])
+
+    doc_id = ingest(conn, client, pdf, canonicalise_terms=False)
+    conn.execute("UPDATE documents SET ingest_complete=0 WHERE id=?", (doc_id,))
+    conn.commit()
+    ingest(conn, client, pdf, canonicalise_terms=False)
+
+    assert conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0] == 1
+    # and no evidence points at a block that no longer exists
+    orphans = conn.execute(
+        "SELECT COUNT(*) FROM evidence e JOIN facts f ON f.id = e.fact_id "
+        "WHERE e.page_no IS NULL").fetchone()[0]
+    assert orphans == 0
