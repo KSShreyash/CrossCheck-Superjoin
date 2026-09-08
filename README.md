@@ -305,17 +305,22 @@ from that process and are kept in the repository.
   FY24-vs-FY23 is where wrong facts are most likely to originate. Long-context windows
   mitigate this; they do not solve it.
 - **Period coverage bounds everything.** A fact without a parseable period can never be
-  part of a contradiction, by design. Improving period attachment is the single highest
-  value next step, because it directly determines how much of the corpus the system can
-  reason about at all.
+  part of a contradiction, by design. 66% of stored facts carry one, and the rest are why
+  494 of 629 pairs sit in `insufficient_context`. Improving period attachment is the
+  single highest-value next step, because it decides how much of the corpus the system
+  can reason about at all. Coverage varies by document, not by model: the earnings deck
+  labels almost everything `FY24`, the prospectus is prose.
 - **Entity clustering can over-merge.** Two similarly named subsidiaries could collapse
   into one canonical entity and manufacture a false contradiction. The threshold is
   conservative and failures should surface in `needs_review`.
 - **Pairing is quadratic.** 0.39s at the roughly 1,250 facts the starter set produces and
   2.2s at 3,000, so it is a non-issue at this size, but the blocking needs rewriting
   before "many documents in one layer" is real.
-- **Recall is unmeasured.** There is no labelled ground truth here, so I can say every
-  stored fact is grounded, but not what fraction of the facts present were found.
+- **Recall is unmeasured, and budget-bound.** There is no labelled ground truth here, so
+  I can say every stored fact is grounded and verify it, but not what fraction of the
+  facts present were found. The committed run reads the densest windows of each document
+  rather than all 158, so recall is limited by the daily quota rather than by the
+  approach.
 - **Cache replay depends on ingest order**, because canonicalisation is incremental.
 
 **Next steps, in the order I would do them:**
