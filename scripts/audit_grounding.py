@@ -7,6 +7,7 @@ recorded offsets. Independent of the extraction path that produced them.
     python scripts/audit_grounding.py
 """
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -48,25 +49,46 @@ def main() -> int:
                 "SELECT text FROM blocks WHERE doc_id=? AND page_no=?", key)))
         return pages[key]
 
-    checked = failures = unplaced = 0
+    checked = failures = unplaced = straddling = 0
     bad = []
     for r in conn.execute(
-            "SELECT f.id, f.doc_id, e.quote, e.page_no, d.filename FROM facts f "
+            "SELECT f.id, f.doc_id, e.quote, e.page_no, e.block_ids, d.filename "
+            "FROM facts f "
             "JOIN evidence e ON e.fact_id = f.id "
             "JOIN documents d ON d.id = f.doc_id"):
         if r["page_no"] is None:
             unplaced += 1
             continue
         checked += 1
-        if norm(r["quote"]) not in page_text(r["doc_id"], r["page_no"]):
-            failures += 1
-            if len(bad) < args.show:
-                bad.append(r)
+        quote = norm(r["quote"])
+        if quote in page_text(r["doc_id"], r["page_no"]):
+            continue
 
-    print(f"facts stored           {facts}")
-    print(f"evidence checked       {checked}")
-    print(f"not resolved to a page {unplaced}")
-    print(f"quote not on its page  {failures}")
+        # Not a contiguous run on the printed page. Two innocent reasons for
+        # that, so check what the evidence actually claims: the blocks it
+        # names. Running headers are filtered before extraction, so a quote
+        # crossing one joins text either side of it, and a quote can also run
+        # from the foot of one page onto the next.
+        block_ids = json.loads(r["block_ids"] or "[]")
+        if block_ids:
+            placeholders = ",".join("?" for _ in block_ids)
+            source = norm(" ".join(
+                x["text"] for x in conn.execute(
+                    "SELECT text FROM blocks WHERE id IN (" + placeholders + ") "
+                    "ORDER BY id", block_ids)))
+            if quote in source:
+                straddling += 1
+                continue
+
+        failures += 1
+        if len(bad) < args.show:
+            bad.append(r)
+
+    print(f"facts stored             {facts}")
+    print(f"evidence checked         {checked}")
+    print(f"not resolved to a page   {unplaced}")
+    print(f"spans blocks or pages     {straddling}")
+    print(f"quote not in its source  {failures}")
 
     for r in bad:
         print(f"\n  fact {r['id']} claims {r['filename']} page {r['page_no']}")

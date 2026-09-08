@@ -157,3 +157,73 @@ def test_a_truncated_window_is_recovered_by_splitting(tmp_path, make_pdf):
             "SELECT text FROM blocks WHERE doc_id=? AND page_no=?",
             (doc_id, r["page_no"])))
         assert r["quote"] in page_text, "quote must be on the page it claims"
+
+
+def _counting_model(payload_by_text=None):
+    class M:
+        def __init__(self):
+            self.extract_calls = 0
+            self.canon_calls = 0
+
+        def complete_json(self, prompt, version, **kw):
+            if version.startswith("canon"):
+                self.canon_calls += 1
+                import re as _re
+                names = _re.findall(r"^- (.+)$", prompt.split("NAMES:", 1)[-1], _re.M)
+                return {"groups": [{"canon_id": "c" + str(i), "label": n,
+                                    "members": [n]} for i, n in enumerate(names)]}
+            self.extract_calls += 1
+            excerpt = prompt.split("EXCERPT:", 1)[-1]
+            quote = "Rs 81,415.38 million"
+            if quote not in excerpt:
+                return {"facts": []}
+            return {"facts": [{"subject": "Delhivery Limited",
+                               "metric": "revenue from operations",
+                               "value_raw": "81,415.38", "unit_raw": "Rs million",
+                               "period_raw": "FY24", "qualifiers": {},
+                               "claim_type": "measurement",
+                               "evidence_quote": quote, "confidence": 0.9}]}
+    return M()
+
+
+def test_max_windows_caps_the_number_of_extraction_calls(tmp_path, make_pdf):
+    # a document long enough to need several windows
+    # text must genuinely vary: identical lines across pages are correctly
+    # treated as running headers and filtered out before windowing
+    words = ("freight parcel tonnage revenue margin expense reserve inflation "
+             "deficit export credit growth capacity network hub gateway").split()
+    pages = [[" ".join(words[(i + j + k) % len(words)] for k in range(11))
+              + f" was Rs 1,2{j}3.45 million in FY24."
+              for j in range(38)] for i in range(14)]
+    pdf = make_pdf(pages)
+    conn = connect(tmp_path / "t.sqlite")
+    init_schema(conn)
+
+    from factlayer.ingest.pdf import extract_blocks as _eb
+    from factlayer.ingest.segment import build_windows as _bw
+    blocks, _ = _eb(pdf)
+    available = len(_bw(blocks, 1, 12000, 1200))
+
+    model = _counting_model()
+    ingest(conn, model, pdf, canonicalise_terms=False, max_windows=2)
+    assert model.extract_calls == min(2, available)
+    assert available >= 2, "fixture must produce more windows than the cap"
+
+
+def test_corpus_canonicalisation_costs_two_calls_not_two_per_document(tmp_path,
+                                                                     make_pdf):
+    from factlayer.pipeline import canonicalise_corpus
+    conn = connect(tmp_path / "t.sqlite")
+    init_schema(conn)
+    model = _counting_model()
+    for name in ("a.pdf", "b.pdf", "c.pdf"):
+        pdf = make_pdf([["Revenue for FY24 stood at Rs 81,415.38 million."]], name=name)
+        ingest(conn, model, pdf, canonicalise_terms=False)
+    assert model.canon_calls == 0, "per-document canonicalisation must be off"
+
+    canonicalise_corpus(conn, model)
+    assert model.canon_calls == 2, "one call for entities, one for metrics"
+    rows = conn.execute(
+        "SELECT COUNT(*) FROM facts WHERE entity_id IS NOT NULL "
+        "AND metric_id IS NOT NULL").fetchone()[0]
+    assert rows == conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]

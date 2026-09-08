@@ -87,7 +87,11 @@ def main() -> int:
         print("no GEMINI_API_KEY set: this will only work for cached responses\n")
 
     started = time.time()
+    exhausted = False
     for n, pdf in enumerate(pdfs, start=1):
+        if exhausted:
+            print(f"[{n}/{len(pdfs)}] {pdf.name} - skipped, quota spent")
+            continue
         print(f"[{n}/{len(pdfs)}] {pdf.name}", flush=True)
         t0 = time.time()
         try:
@@ -97,6 +101,13 @@ def main() -> int:
         except NoAPIKey as exc:
             print(f"    stopped: {exc}")
             return 2
+        except Exception as exc:                   # noqa: BLE001
+            # A daily quota running out mid-corpus must not discard the work
+            # already done. Stop reading, keep what was extracted, and carry on
+            # to the phases that can still run.
+            print(f"    stopped reading: {type(exc).__name__}: {str(exc)[:100]}")
+            exhausted = True
+            continue
         facts = conn.execute("SELECT COUNT(*) FROM facts WHERE doc_id=?",
                              (doc_id,)).fetchone()[0]
         dated = conn.execute(
@@ -117,7 +128,16 @@ def main() -> int:
               f"{str(exc)[:120]}")
 
     print("building relations...", flush=True)
-    written = build_relations(conn, client, max_model_calls=args.max_model_calls)
+    budget = 0 if exhausted else args.max_model_calls
+    if exhausted:
+        print("    quota spent, so relations are built by rule alone "
+              "(no adjudication)")
+    try:
+        written = build_relations(conn, client, max_model_calls=budget)
+    except Exception as exc:                       # noqa: BLE001
+        print(f"    adjudication stopped: {type(exc).__name__}; "
+              f"retrying by rule alone")
+        written = build_relations(conn, client, max_model_calls=0)
     print(f"{written} relations in {time.time() - started:.1f}s total\n")
 
     for row in conn.execute("SELECT final_verdict, COUNT(*) n FROM relations "
