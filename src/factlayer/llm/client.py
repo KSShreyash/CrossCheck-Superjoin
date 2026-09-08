@@ -43,10 +43,6 @@ def _is_quota(exc: Exception) -> bool:
     return any(marker in blob for marker in _QUOTA)
 
 
-def _is_daily_quota(exc: Exception) -> bool:
-    return _is_quota(exc)
-
-
 def _is_retryable(exc: Exception) -> bool:
     if isinstance(exc, (BadModelJSON, NoAPIKey, DailyQuotaExhausted)):
         return False
@@ -200,7 +196,7 @@ class LLMClient:
                     return data
                 except Exception as exc:               # noqa: BLE001
                     last_exc = exc
-                    if _is_daily_quota(exc):
+                    if _is_quota(exc):
                         # this pairing is done for the day; try the next one
                         self._spent.add((api_key, model))
                         break

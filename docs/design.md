@@ -113,14 +113,20 @@ therefore deduplicated per document on subject, metric, value, period and normal
 quote. The key is per document deliberately: the same fact in a *different* document is
 the cross-document corroboration we are looking for.
 
-**Failure handling.** Three things go wrong in practice and each is contained rather
-than fatal. A free-tier quota error or a transient server error is retried with bounded
-backoff. A malformed or truncated response raises a named error and costs that one
-window, not the document — a bare parse error propagating out of extraction would
-otherwise discard a hundred pages of work. Malformed JSON is deliberately not retried:
-temperature is zero, so the model reproduces it and retrying only burns quota. A missing
-API key with nothing cached is the one case that stops the run, because failing loudly
-beats writing an empty knowledge layer that looks like a result.
+**Failure handling.** Everything that goes wrong costs one window rather than the
+document, because a parse error propagating out of extraction would otherwise discard a
+hundred pages of work.
+
+- A transient server error is retried with bounded backoff. It costs no allowance.
+- A quota refusal is never retried; it rotates to the next model. Every attempt is
+  itself a counted request, so backing off spends more of exactly what just ran out.
+- Malformed JSON is not retried either — temperature is zero, so the model reproduces
+  it. The window is halved and read again instead, since the densest windows are both
+  the likeliest to overflow the output limit and the most worth recovering.
+- A window with no cached response and no API key is skipped, not fatal. Replaying the
+  committed cache with a larger budget than it was built with hits exactly this, and
+  abandoning the document there would throw away the cached windows behind it. The
+  document stays marked incomplete so a later run with a key picks it up.
 
 ### 2. Normalisation
 
@@ -264,9 +270,7 @@ the natural place to point during the failure-case discussion.
 ### 6. Storage
 
 SQLite, one file. Tables: `documents`, `blocks`, `facts`, `evidence`, `canon_terms`,
-`relations`, `llm_cache`, `rejected_facts`, `gaps`, `jobs`. Embeddings are float32
-BLOBs compared with numpy; at a few thousand facts brute-force cosine is sub-millisecond
-and needs no extra service.
+`relations`, `llm_cache`, `rejected_facts`, `gaps`, `jobs`.
 
 Two constraints carry weight. Documents are keyed by content hash, so re-uploading a
 file is a no-op rather than a second copy. Relations are unique on their fact pair,
@@ -280,7 +284,7 @@ a grader runs one command with nothing to provision.
 
 ### 7. API and UI
 
-FastAPI, with the UI served by the same process as Jinja templates driven by htmx. No
+FastAPI, with the UI served by the same process as Jinja templates. No JavaScript, no
 build step, no `node_modules`, no separate dev server.
 
 ```

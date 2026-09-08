@@ -71,41 +71,6 @@ def show(row):
         print("    note       : rule and model disagree; held for review")
 
 
-def show_markdown(row):
-    """The same evidence, ready to paste into the README."""
-    def side(tag, doc, page, quote, metric, value, unit, period, quals, canon, cunit):
-        print(f"- **{tag}** — `{doc}`, page {page}")
-        print(f"  > {str(quote).strip()}")
-        bits = [f"`{metric}`", f"**{value} {unit or ''}**".rstrip()]
-        if period:
-            bits.append(f"period `{period}`")
-        if canon is not None:
-            bits.append(f"normalised `{canon:,.2f} {cunit}`")
-        if quals and quals not in ("{}", None):
-            bits.append(f"qualifiers `{quals}`")
-        print("  " + " · ".join(bits))
-
-    side("A", row["a_doc"], row["a_page"], row["a_quote"], row["a_metric"],
-         row["a_value"], row["a_unit"], row["a_period"], row["a_quals"],
-         row["a_canon"], row["a_cunit"])
-    side("B", row["b_doc"], row["b_page"], row["b_quote"], row["b_metric"],
-         row["b_value"], row["b_unit"], row["b_period"], row["b_quals"],
-         row["b_canon"], row["b_cunit"])
-    print()
-    print(f"**Rule layer:** `{row['rule_verdict']}`", end="")
-    if row["model_verdict"]:
-        print(f" → **model:** `{row['model_verdict']}` (`{row['reason_code']}`)")
-        print(f"> {str(row['explanation']).strip()}")
-    else:
-        print(" — settled without a model call.")
-    if row["claimed_transform"]:
-        state = {1: "confirmed", 0: "**rejected**"}.get(row["verified"], "n/a")
-        print(f"**Verification:** {state}, transform `{row['claimed_transform']}`")
-    if row["agreed"] == 0:
-        print("**Held for review:** rule and model disagree.")
-    print()
-
-
 def pick(conn, verdict, cross_document=True, limit=1):
     rows = [r for r in conn.execute(REL_SQL, (verdict,))]
     if cross_document:

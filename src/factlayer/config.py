@@ -23,7 +23,6 @@ class Settings:
         "gemini-3.6-flash,gemini-3.7-flash,gemini-3.5-flash,gemini-3.1-flash-lite")
     # optional comma-separated additional keys
     api_key_rotation: str = os.getenv("GEMINI_API_KEYS", "")
-    embed_model: str = "text-embedding-004"
     value_tolerance: float = 1e-3        # relative, absorbs printed rounding
     window_chars: int = 12000            # long-context extraction window
     window_overlap: int = 1200

@@ -71,3 +71,13 @@ def test_unrelated_subjects_and_metrics_are_still_kept_apart():
     a = _f(1, "revenue", "revenue from operations", entity="delhivery")
     b = _f(2, "tonnage", "freight tonnage", entity="india")
     assert candidate_pairs([a, b], max_per_fact=10) == []
+
+
+def test_an_unrecorded_unit_does_not_block_a_pair():
+    # A bare "million" in a table whose header carried the currency normalises
+    # to UNKNOWN. Comparing units with a plain inequality makes that look like
+    # a different unit and silently drops the comparison - which is exactly
+    # the revenue case the whole system is meant to catch.
+    a = _f(1, "revenue", "Turnover", unit="UNKNOWN")
+    b = _f(2, "revenue", "revenue from services", unit="INR")
+    assert (0, 1) in candidate_pairs([a, b], max_per_fact=10)

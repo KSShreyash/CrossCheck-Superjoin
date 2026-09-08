@@ -75,18 +75,6 @@ Ingest order matters if you intend to reuse the committed cache. Canonicalisatio
 incremental, so its prompt reflects what was ingested before it; the script sorts
 filenames so the order is reproducible.
 
-To see the interface with data in it before setting up a key at all:
-
-```bash
-python scripts/demo_fixture.py
-FACTLAYER_DB=demo.sqlite uvicorn factlayer.api:app
-```
-
-That writes four small PDFs, runs the real pipeline against a fixed stub model, and
-produces one cross-document corroboration, one genuine contradiction and several
-context-reconciled pairs. It is a smoke test, not a result: the documents are synthetic
-and clearly named as such.
-
 Verify the central claim yourself — that every stored fact quotes text that is really
 in its source:
 
@@ -168,7 +156,7 @@ measure corroborates when the dates agree and reconciles when they do not.
 - **107 proposed facts rejected** because their quote could not be found verbatim in the
   window it came from. This is why every stored fact is grounded rather than intended to
   be, and the audit script lets you check that claim rather than take it.
-- **494 pairs left undecided** as `insufficient_context`, because a fact without a
+- **507 pairs left undecided** as `insufficient_context`, because a fact without a
   parseable period cannot honestly be called contradictory. An earlier version treated a
   missing period as a matching one and manufactured 1,480 false contradictions — 45% of
   all pairs.
@@ -184,8 +172,8 @@ Amount", which is the over-merge risk named in the design, observed in practice.
 | documents / pages | 6 / 511 |
 | facts stored | 490, **all 490 resolved to a page and verified against it** |
 | facts carrying a period | 321 (66%) |
-| relations | 629 |
-| corroborates / reconciled / contradicts | 34 / 79 / 22 |
+| relations | 646 |
+| corroborates / reconciled / contradicts | 37 / 79 / 23 |
 | rejected as ungrounded | 107 |
 | model calls needed to reproduce | **0** — 100 are committed |
 
@@ -279,13 +267,16 @@ system simply declines to claim something it cannot support.
 
 ### AI tools used
 
-Claude (via Claude Code) was used throughout: to explore the starter documents, argue
+An AI coding assistant was used throughout: to explore the starter documents, argue
 through the design, write code and tests, and — most usefully — to review the plan
-repeatedly before building. Six review passes found twenty-one defects, of which nine
-would have shipped silently. The ones that mattered were found by *running* code rather
-than reading it, and several are described in "Limitations" below because they shaped
-the design. `docs/design.md` and `docs/implementation-plan.md` are the working documents
-from that process and are kept in the repository.
+against itself before building. Several review passes found defects that reading alone
+had missed, and the ones that mattered were found by *running* code rather than reading
+it: evidence resolving to the wrong page, a missing period reading as a matching one,
+and a unit comparison that silently refused to compare the very figures the system
+exists to compare. Those are described in the limitations below because they shaped the
+design rather than merely being fixed.
+
+`docs/design.md` is the design document from that process and is kept in the repository.
 
 ---
 
@@ -306,7 +297,7 @@ from that process and are kept in the repository.
   mitigate this; they do not solve it.
 - **Period coverage bounds everything.** A fact without a parseable period can never be
   part of a contradiction, by design. 66% of stored facts carry one, and the rest are why
-  494 of 629 pairs sit in `insufficient_context`. Improving period attachment is the
+  507 of 646 pairs sit in `insufficient_context`. Improving period attachment is the
   single highest-value next step, because it decides how much of the corpus the system
   can reason about at all. Coverage varies by document, not by model: the earnings deck
   labels almost everything `FY24`, the prospectus is prose.
@@ -340,6 +331,5 @@ from that process and are kept in the repository.
 
 - No credentials are in the repository. `.env` is gitignored; `.env.example` shows the
   shape.
-- `docs/design.md` is the design; `docs/implementation-plan.md` is the build plan and
-  carries the full record of the six review passes, including what each one got wrong.
+- `docs/design.md` records the design, the trade-offs, and what is known not to work.
 - The commit history is the real working history rather than a squashed import.

@@ -40,10 +40,12 @@ def candidate_pairs(facts: list[Fact], max_per_fact: int) -> list[tuple[int, int
            facts[a].entity_id != facts[b].entity_id and \
            facts[a].metric_id != facts[b].metric_id:
             return
-        # incomparable units are noise, not disagreement: without this gate a
-        # rupee figure pairs with a percentage purely on shared metric words
-        if facts[a].canon_unit and facts[b].canon_unit and \
-           facts[a].canon_unit != facts[b].canon_unit:
+        # Incomparable units are noise, not disagreement: without this gate a
+        # rupee figure pairs with a percentage purely on shared metric words.
+        # It must go through units_compatible rather than a plain inequality,
+        # or UNKNOWN - a magnitude whose dimension was never recorded - reads
+        # as a different unit and blocks the comparison entirely.
+        if not units_compatible(facts[a].canon_unit, facts[b].canon_unit):
             return
         scored[(a, b)] = max(scored.get((a, b), 0.0), score)
 
