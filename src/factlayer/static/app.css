@@ -101,3 +101,9 @@ dd { margin: 0; font-size: .88rem; overflow-wrap: anywhere; }
         padding: .7rem .9rem; margin: 0 0 1rem; font-size: .87rem;
         color: var(--muted); max-width: 70ch; }
 .note b { color: var(--ink); }
+
+.note.empty { border-left-color: var(--warn); color: var(--ink); max-width: 80ch; }
+.note.empty p { margin: .5rem 0; color: var(--muted); }
+.note.empty pre { background: #f0efec; border: 1px solid var(--line); border-radius: 4px;
+                  padding: .5rem .7rem; margin: .5rem 0; overflow-x: auto;
+                  font-size: .82rem; }

@@ -3,11 +3,31 @@
 {% block content %}
 <h1>Documents</h1>
 
+{% if not documents %}
+<div class="note empty">
+  <b>Nothing has been ingested yet.</b>
+  <p>
+    This is a fresh checkout. The model responses for the starter dataset are already
+    committed under <code>cache/</code>, so building the knowledge layer needs no API key
+    and takes a few seconds — but the facts and relations are computed by the pipeline
+    rather than shipped, so it has to run once:
+  </p>
+  <pre>python scripts/ingest_starter.py /path/to/starter-datasets --max-windows-per-doc 25</pre>
+  <p>
+    Point it at the documents supplied with the assignment; it searches recursively, so
+    either folder level works. Then reload this page. Any other folder of PDFs works too,
+    though a document the cache has never seen needs a <code>GEMINI_API_KEY</code> in
+    <code>.env</code>. You can also upload a single PDF using the form below.
+  </p>
+</div>
+{% endif %}
+
+{% if documents %}
 <p class="note">
-  These six are the <b>starter dataset supplied with the assignment</b>, already
-  processed. Nothing about them is hard-coded: the cached model responses ship so the
-  results can be reviewed without an API key, but every fact and relation below is
-  recomputed by the pipeline on each run.
+  The documents below are the <b>starter dataset supplied with the assignment</b>, plus
+  anything you have uploaded. Nothing about them is hard-coded: the cached model
+  responses ship so the results can be reviewed without an API key, but every fact and
+  relation here is recomputed by the pipeline on each run.
   {%- if stats.has_api_key %}
   Upload any PDF to run it through the same path.
   {%- else %}
@@ -15,6 +35,7 @@
   never seen needs a <code>GEMINI_API_KEY</code>, since it genuinely has to be read.
   {%- endif %}
 </p>
+{% endif %}
 
 <form class="upload" method="post" action="/upload" enctype="multipart/form-data">
   <input type="file" name="file" accept="application/pdf" required>
