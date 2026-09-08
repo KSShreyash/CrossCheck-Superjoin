@@ -45,8 +45,15 @@ def _bump_job(conn, job_id, *, stage="extracting", done=0, total=None, facts=0):
 
 
 def _already_ingested(conn, doc_id: int) -> bool:
-    return conn.execute("SELECT 1 FROM blocks WHERE doc_id=? LIMIT 1",
-                        (doc_id,)).fetchone() is not None
+    """Whether extraction finished for this document.
+
+    Deliberately not "does it have blocks": blocks are written before the
+    model is called, so an ingest cut short by a spent quota leaves a document
+    that looks ingested and would never be retried.
+    """
+    row = conn.execute("SELECT ingest_complete FROM documents WHERE id=?",
+                       (doc_id,)).fetchone()
+    return bool(row and row["ingest_complete"])
 
 
 def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
@@ -67,10 +74,14 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
     doc_id = save_document(conn, file_sha256(pdf_path), pdf_path.name,
                            pdf_path.stem, pages)
     if _already_ingested(conn, doc_id):
-        # same bytes as a document already stored; blocks and facts are there
+        # same bytes as a document already read through to the end
         _bump_job(conn, job_id, stage="already ingested", done=1, total=1)
         return doc_id
 
+    # a previous attempt may have stored blocks before running out of quota
+    conn.execute("DELETE FROM blocks WHERE doc_id=?", (doc_id,))
+    conn.execute("DELETE FROM gaps WHERE doc_id=?", (doc_id,))
+    conn.commit()
     block_row_ids = save_blocks(conn, doc_id, blocks)
     save_gaps(conn, doc_id, gaps)
 
@@ -144,6 +155,8 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
     for f in facts:
         save_fact(conn, f, window_of[id(f)], block_row_ids)
     save_rejected(conn, doc_id, rejected)
+    conn.execute("UPDATE documents SET ingest_complete=1 WHERE id=?", (doc_id,))
+    conn.commit()
     _bump_job(conn, job_id, stage="done", done=len(windows), total=len(windows),
               facts=len(facts))
     return doc_id

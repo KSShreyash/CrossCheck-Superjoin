@@ -4,7 +4,11 @@ from pathlib import Path
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
   id INTEGER PRIMARY KEY, sha256 TEXT UNIQUE, filename TEXT,
-  title TEXT, page_count INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+  title TEXT, page_count INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  -- set only when extraction finished. Blocks are saved before extraction
+  -- starts, so their presence does not mean the document was read: an ingest
+  -- interrupted by a spent quota would otherwise look complete for ever.
+  ingest_complete INTEGER DEFAULT 0);
 
 CREATE TABLE IF NOT EXISTS blocks (
   id INTEGER PRIMARY KEY, doc_id INTEGER, page_no INTEGER, block_index INTEGER,

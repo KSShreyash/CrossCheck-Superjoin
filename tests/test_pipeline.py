@@ -227,3 +227,31 @@ def test_corpus_canonicalisation_costs_two_calls_not_two_per_document(tmp_path,
         "SELECT COUNT(*) FROM facts WHERE entity_id IS NOT NULL "
         "AND metric_id IS NOT NULL").fetchone()[0]
     assert rows == conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+
+
+def test_an_interrupted_ingest_is_retried_not_skipped(tmp_path, make_pdf):
+    # Blocks are written before the model is called. A run cut short by a spent
+    # quota leaves blocks with no facts, and the document must not then look
+    # complete for ever.
+    pdf = make_pdf([[LINE]])
+    conn = connect(tmp_path / "t.sqlite")
+    init_schema(conn)
+
+    class Failing:
+        def complete_json(self, prompt, version, **kw):
+            raise RuntimeError("quota gone")
+
+    try:
+        ingest(conn, Failing(), pdf, canonicalise_terms=False)
+    except RuntimeError:
+        pass
+    assert conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0] == 0
+
+    # a later run with working access must actually read it
+    client = LLMClient(conn, api_key=None, model="m")
+    _seed(conn, pdf, [_fact("81,415.38", "Rs million", "Rs 81,415.38 million")])
+    ingest(conn, client, pdf, canonicalise_terms=False)
+    assert conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
+    # and blocks are not duplicated by the retry
+    assert conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0] == 1
