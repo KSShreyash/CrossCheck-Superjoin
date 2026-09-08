@@ -3,6 +3,15 @@
 {% block content %}
 <h1>Documents</h1>
 
+<p class="note">
+  These six are the <b>starter dataset supplied with the assignment</b>, already
+  processed. Nothing about them is hard-coded: the cached model responses ship so the
+  results can be reviewed without an API key, but every fact and relation below is
+  recomputed by the pipeline on each run. Upload any PDF to run it through the same path
+  {% if not stats.has_api_key %}— though a document the cache has never seen needs a
+  <code>GEMINI_API_KEY</code>, since it genuinely has to be read{% endif %}.
+</p>
+
 <form class="upload" method="post" action="/upload" enctype="multipart/form-data">
   <input type="file" name="file" accept="application/pdf" required>
   <button type="submit">Ingest PDF</button>

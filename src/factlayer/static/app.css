@@ -95,3 +95,9 @@ dd { margin: 0; font-size: .88rem; overflow-wrap: anywhere; }
 .step .val.bad { color: var(--bad); }
 .step p { margin: .35rem 0 0 7rem; font-size: .88rem; }
 @media (max-width: 640px) { .step p { margin-left: 0; } }
+
+.note { background: var(--panel); border: 1px solid var(--line);
+        border-left: 3px solid var(--accent); border-radius: 6px;
+        padding: .7rem .9rem; margin: 0 0 1rem; font-size: .87rem;
+        color: var(--muted); max-width: 70ch; }
+.note b { color: var(--ink); }

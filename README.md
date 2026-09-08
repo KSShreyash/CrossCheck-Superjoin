@@ -99,6 +99,43 @@ pytest            # full suite, no network access required
 
 ---
 
+## About the pre-loaded documents
+
+The six documents already in the interface are **the starter dataset provided with the
+assignment**, processed by the same pipeline any other PDF goes through. Upload your own
+through the web interface or point `scripts/ingest_starter.py` at another folder — the
+system has no knowledge of these particular files.
+
+Since the brief rules out relying on hard-coded facts, filenames or schemas, here is
+what is and is not shipped:
+
+| shipped | not shipped |
+| --- | --- |
+| 100 cached model responses, keyed by a hash of the prompt | any fact, relation or verdict |
+| the canonical term mapping the model produced | any list of expected metrics or entities |
+
+**Facts and relations are recomputed from those responses on every run**, by the code in
+this repository. Nothing you see was written into a database by hand. The cache exists
+because the brief asks for "enough sample output ... to evaluate it without needing your
+account", and because the Gemini free tier allows 20 requests per day per model — reading
+this corpus from scratch takes several days on one key.
+
+`tests/test_no_hardcoding.py` enforces the rest, so the guarantee survives future edits:
+
+- no string literal anywhere in `src/` names one of these documents, companies or
+  metrics — docstrings explaining *why* a rule exists are exempt, code is not
+- the only fixed vocabularies are generic roles: provenance keys such as `source` and
+  `publisher`, and transform kinds such as `basis` and `vintage`
+- a qualifier key the system has never seen is compared correctly without code changes
+
+**To ingest a PDF the cache has never seen you need a Gemini API key** in `.env`, because
+that genuinely requires reading new text. Without one the upload is accepted, the pages
+it cannot read are recorded as skipped, and the document is left marked incomplete so a
+later run with a key picks it up — it fails visibly rather than silently returning
+nothing.
+
+---
+
 ## The four cases
 
 Everything below is reproduced by cloning this repository and running two commands, with
