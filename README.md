@@ -1,13 +1,12 @@
-# Fact Knowledge Layer
+# CrossCheck
 
-Pulls facts out of PDFs, keeps every fact tied to the words it came from, and works out
-where facts across documents agree, disagree, or only appear to disagree.
+A fact knowledge layer over PDFs. It extracts facts, ties each one to the text it came
+from, and decides where facts across documents agree, disagree, or only appear to
+disagree.
 
 Built for the Superjoin engineering intern assignment.
 
----
-
-## Setup and run instructions
+## Setup and Run Instructions
 
 Requires Python 3.11 or newer.
 
@@ -16,149 +15,131 @@ git clone https://github.com/KSShreyash/CrossCheck-Superjoin.git
 cd CrossCheck-Superjoin
 pip install -e ".[dev]"
 
-python scripts/ingest_starter.py     # builds the knowledge layer, ~3s, no API key
+python scripts/ingest_starter.py     # builds the knowledge layer, about 3 seconds
 python scripts/serve.py              # then open http://127.0.0.1:8000
 ```
 
-That is everything. The starter documents are bundled under `starter-datasets/` and the
-model responses are committed under `cache/`, so **no API key is needed** and nothing has
-to be supplied. A key is only needed to read a PDF the cache has never seen.
+No API key is required. The six starter documents are bundled under `starter-datasets/`,
+and the model responses for them are committed under `cache/`, so the pipeline replays
+them offline. A key is only needed to read a PDF the cache has not seen.
 
-Two more commands worth running:
+Two more commands are worth running:
 
 ```bash
 python scripts/show_cases.py         # the four required cases, with their evidence
-python scripts/audit_grounding.py    # re-checks every quote against its source page
+python scripts/audit_grounding.py    # re-checks every stored quote against its source
 ```
 
-`scripts/serve.py` is used rather than `uvicorn factlayer.api:app` because it works from a
-bare checkout — it puts `src/` on the path itself, as the other scripts do. If
-`pip install -e .` succeeded then `uvicorn factlayer.api:app` is equivalent.
+`scripts/serve.py` is used instead of `uvicorn factlayer.api:app` because it adds `src/`
+to the path itself and therefore works from a bare checkout. If `pip install -e .`
+succeeded, `uvicorn factlayer.api:app` is equivalent.
 
-`ingest_starter.py` takes an optional path, so any other folder of PDFs works:
-
-```bash
-python scripts/ingest_starter.py /some/other/folder
-```
-
-To ingest PDFs the cache has never seen, put a key in `.env` (gitignored; a free one comes
-from <https://aistudio.google.com/apikey>):
+To read documents the cache has not seen, put a key in `.env` (gitignored; a free one
+comes from https://aistudio.google.com/apikey):
 
 ```
 GEMINI_API_KEY=your_key_here
 ```
 
-Then upload through the web interface, or point the script at another folder.
-
-Run the tests with `pytest` — the full suite needs no network access and no key.
-
-**The free tier allows 20 requests per day, per model.** Not per minute — I found that
-out by hitting it mid-ingest. The whole corpus needs about 160 requests, so one model
-cannot read all 511 pages in a day. Three things follow, and they shaped the design more
-than anything else:
-
-- **A budget is spent deliberately.** `--max-windows-per-doc N` reads the N densest
-  windows of each document. Windows were already ordered by fact density so an
-  interrupted run lost the least valuable pages; the same ordering lets a run be
-  truncated on purpose. `--dry-run` prices a run before it happens.
-- **Canonicalisation is one pass over the corpus, not one per document** — two requests
-  instead of twelve, and a better answer besides, since the model sees every metric name
-  at once rather than meeting them a document at a time.
-- **One key is enough, because the quota is per model.** The client rotates through
-  several models and moves on when one is spent. A quota refusal is never retried:
-  every attempt is itself a counted request, so backing off spends more of exactly what
-  just ran out. Set `FACTLAYER_MODELS` to change the order.
+Then upload a PDF through the web interface, or pass a folder to the ingest script:
 
 ```bash
-python scripts/ingest_starter.py ../starter-datasets/starter-datasets --max-windows-per-doc 2
+python scripts/ingest_starter.py /some/other/folder
 ```
 
-Recall is therefore bounded by budget rather than by capability. Raise the cap and it
-reads more; nothing in the architecture changes.
+Run the test suite with `pytest`. It needs no network access and no key.
 
-The two starter datasets are independent. All four cases below happen to come from the
-Delhivery documents, but the macroeconomic set is where the period normaliser earns its
-keep: the RBI writes `2025-26` for the fiscal year the IMF writes `FY2025/26`, and
-without resolving both to the same dates their growth projections are never compared at
-all. Ingest both.
+### A note on the free tier
 
-Ingest order matters if you intend to reuse the committed cache. Canonicalisation is
-incremental, so its prompt reflects what was ingested before it; the script sorts
-filenames so the order is reproducible.
+The Gemini free tier allows 20 requests per day per model, not per minute. Reading all
+511 pages of the starter corpus takes about 160 requests, so a single key cannot do it in
+one day. Three things follow, and they shaped the design:
 
-Verify the central claim yourself — that every stored fact quotes text that is really
-in its source:
+* `--max-windows-per-doc N` reads only the N densest windows of a document. Windows are
+  ordered by how many figures they contain, so a truncated run keeps the valuable pages.
+* Canonicalisation runs once over the whole corpus rather than once per document, which
+  costs two requests instead of twelve.
+* The client rotates through several models, since the quota is counted per model, and
+  never retries a quota refusal. Every attempt is itself a counted request, so backing
+  off spends more of what has just run out.
 
-```bash
-python scripts/audit_grounding.py
-```
+`--dry-run` prices a run before making it.
 
-It re-reads each piece of evidence and looks for it in the stored text of the page it
-cites, rather than trusting the offsets recorded at extraction time.
-
-Tests:
-
-```bash
-pytest            # full suite, no network access required
-```
-
----
-
-## Video demo
+## Video Demo
 
 <!-- TODO: add the link once recorded -->
 
----
+## Approach
 
-## About the pre-loaded documents
+### The problem is comparability, not extraction
 
-The six documents already in the interface are **the starter dataset provided with the
-assignment**, processed by the same pipeline any other PDF goes through. Upload your own
-through the web interface or point `scripts/ingest_starter.py` at another folder — the
-system has no knowledge of these particular files.
+The starter documents all have a clean text layer, so pulling numbers out of them is
+mostly plumbing. The difficulty is deciding that two facts are about the same thing
+before saying anything about whether they agree:
 
-Since the brief rules out relying on hard-coded facts, filenames or schemas, here is
-what is and is not shipped:
+* `₹8,142 Cr` and `81,415.38` in ₹ million are the same revenue, a hundredfold apart.
+* `₹74,540.82 mn` and `₹81,415.38 mn` are both FY24 revenue, and both correct, because
+  one is standalone and the other consolidated.
+* The RBI writes `2025-26` for the fiscal year the IMF writes `FY2025/26`.
 
-| shipped | not shipped |
-| --- | --- |
-| the six starter PDFs, so nothing has to be supplied | any fact, relation or verdict |
-| 100 cached model responses, keyed by a hash of the prompt | any list of expected metrics or entities |
-| the canonical term mapping the model produced | any hand-written result |
+So most of the weight sits in the fact representation and the normalisers. Every fact
+carries its own qualifiers: metric, subject, period, unit and scale, reporting basis,
+data vintage. Agreement then largely falls out of comparing them. Without that, the
+alternative is per-document rules, which the brief rules out and which would not survive
+an unfamiliar PDF.
 
-**Facts and relations are recomputed from those responses on every run**, by the code in
-this repository. Nothing you see was written into a database by hand. The cache exists
-because the brief asks for "enough sample output ... to evaluate it without needing your
-account", and because the Gemini free tier allows 20 requests per day per model — reading
-this corpus from scratch takes several days on one key.
+### The model proposes, the rules verify
 
-`tests/test_no_hardcoding.py` enforces the rest, so the guarantee survives future edits:
+An LLM is good at noticing that "revenue from services" and "Revenue from Operations"
+may be the same metric, and poor at being checkable. Arithmetic is the reverse. So the
+model is given latitude to find and propose, and every quantitative claim it makes is
+re-derived independently:
 
-- no string literal anywhere in `src/` names one of these documents, companies or
-  metrics — docstrings explaining *why* a rule exists are exempt, code is not
-- the only fixed vocabularies are generic roles: provenance keys such as `source` and
-  `publisher`, and transform kinds such as `basis` and `vintage`
-- a qualifier key the system has never seen is compared correctly without code changes
+1. It extracts facts, but a fact is discarded unless its quote is found verbatim in the
+   source window. Grounding is enforced, not intended.
+2. It adjudicates pairs the rules cannot settle. When it claims two figures reconcile by
+   a change of scale, the arithmetic has to agree; when it claims a change of basis
+   explains a gap, the basis has to actually differ.
+3. Where rule and model disagree, the pair is recorded as `needs_review` rather than
+   resolved.
 
-**To ingest a PDF the cache has never seen you need a Gemini API key** in `.env`, because
-that genuinely requires reading new text. Without one the upload is accepted, the pages
-it cannot read are recorded as skipped, and the document is left marked incomplete so a
-later run with a key picks it up — it fails visibly rather than silently returning
-nothing.
+### Deciding what to decide
 
----
+The rule layer classifies each candidate pair before any model call.
 
-## The four cases
+| Values | Periods | Qualifiers | Verdict |
+| --- | --- | --- | --- |
+| agree | any | none differ | `corroborates`, by rule |
+| agree | any | some differ | `corroborates`, caveat recorded |
+| differ | either unknown | any | `insufficient_context` |
+| differ | both known | only the period | `reconciled_by_context`, by rule |
+| differ | both known | exactly one other | model explains it |
+| differ | both known | none differ | model adjudicates |
+| different units | any | any | `unrelated` |
 
-Everything below is reproduced by cloning this repository and running two commands, with
-**no API key**: the model responses are committed, and the facts and relations are
-recomputed from them by this code. Every quote is stored evidence, and
-`python scripts/audit_grounding.py` re-checks all 490 of them against the pages they cite.
+One principle runs through the whole comparison: an unknown value is not a different
+value. It applies in three places.
 
-```bash
-python scripts/ingest_starter.py ../starter-datasets/starter-datasets --max-windows-per-doc 25
-python scripts/show_cases.py
-```
+* A missing period means unknown, not "the same period as the other fact". An earlier
+  version treated two undated facts as contemporaneous, which turned every difference in
+  their values into a contradiction: 1,480 of them across two documents, 45% of all
+  pairs.
+* A unit that reduces to nothing once scale words are stripped, such as a bare `million`
+  from a table whose header carried the currency, is an unknown dimension rather than a
+  different one. Treating it as different stopped the earnings deck's `Rs. Cr` from ever
+  being compared with the annual report's `million`.
+* A qualifier recorded on one side and absent on the other is unknown. Counting it as a
+  difference downgraded a genuine disagreement into one that looked explained.
+
+Numbers are also compared at the precision they were printed. An earnings deck reporting
+`1.4 Mn Tons` and an annual report reporting `1,429K tonnes` are the same figure at two
+and four significant figures; a flat tolerance reads that 2% gap as a disagreement.
+
+### The four cases
+
+Reproduced by `python scripts/show_cases.py`. Every quote below is stored evidence, and
+`python scripts/audit_grounding.py` re-checks all 490 of them against the pages they
+cite.
 
 **1. A fact corroborated across documents, expressed differently.**
 
@@ -168,10 +149,9 @@ python scripts/show_cases.py
 | metric | `Pin codes covered` | `Pin-code reach` |
 | period | as of March 31, 2024 | Q4 FY24 |
 
-Two documents, two names for the metric, and two ways of writing the period — one a
-date, the other a quarter — that normalise to the same instant. The deck reports it as
-the last point of a quarterly series; the annual report as a single figure. Settled by
-rule, no model call.
+Two documents, two names for the metric, and two ways of writing the period that
+normalise to the same instant. The deck reports it as the last point of a quarterly
+series. Settled by rule, with no model call.
 
 **2. A genuine or likely contradiction.**
 
@@ -181,207 +161,138 @@ rule, no model call.
 | value | 1.6 per cent, FY24 | 0.9 per cent, FY24 |
 
 Same company, same period, same unit, and nothing recorded distinguishes them, so the
-rules raise it rather than explain it away. The honest reading is that one is adjusted
-and the other is not — a distinction neither document attached to the number itself.
-That is what makes it worth surfacing: as reported, the two disagree.
+rules raise it rather than explain it away. One figure is adjusted and the other is not,
+a distinction neither document attached to the number itself. As reported, the two
+disagree.
+
+A second instance, across institutions, at `/relations/3`: the RBI Annual Report projects
+real GDP growth of 6.5 per cent for `2025-26` (p17) and the IMF Article IV projects 6.6
+per cent for `FY2025/26` (p13). Both period strings normalise to 2025-04-01. Without that
+step the two are never compared.
 
 **3. An apparent contradiction explained by context.**
 
 | | prospectus, p44 | annual report, p2 |
 | --- | --- | --- |
-| quote | "we provide our services in 17,488 postal index number ("PIN") codes, as of December 31, 2021" | "18,793 (1) Pin codes covered" |
+| quote | "we provide our services in 17,488 postal index number (PIN) codes, as of December 31, 2021" | "18,793 (1) Pin codes covered" |
 | period | as of December 31, 2021 | as of March 31, 2024 |
 
-The same metric as case 1, across a two-year gap. `different_period`, decided by rule
-with no model call: a company covering more PIN codes in 2024 than in 2021 is growth,
-not a contradiction. Case 1 and case 3 together are the point of the system — the same
-measure corroborates when the dates agree and reconciles when they do not.
+The same metric as case 1, across a two-year gap. Resolved as `different_period` by rule:
+a company covering more PIN codes in 2024 than in 2021 is growth, not a contradiction.
+Cases 1 and 3 together are the point of the system. The same measure corroborates when
+the dates agree and reconciles when they do not.
 
 **4. An extraction or reasoning failure, and how it is handled.**
 
-- **6 unreadable pages**, found without any model: the IMF cover page yields no text at
+* Six unreadable pages, found without any model. The IMF cover page yields no text at
   all, four earnings-deck slides are images, and prospectus p63 gives 53 characters.
-  Recorded as gaps with reasons rather than silently contributing nothing.
-- **29 proposed facts rejected** because their quote could not be found verbatim in the
-  window it came from. This is why every stored fact is grounded rather than intended to
-  be, and the audit script lets you check that claim rather than take it. Reported
-  separately from the **117 windows never read at all**, for want of a cached response
-  and a key — that is unread text, not a failed extraction, and adding the two together
-  would overstate the error rate fourfold.
-- **507 pairs left undecided** as `insufficient_context`, because a fact without a
-  parseable period cannot honestly be called contradictory. An earlier version treated a
-  missing period as a matching one and manufactured 1,480 false contradictions — 45% of
-  all pairs.
+  Each is recorded as a gap with a reason rather than silently contributing nothing.
+* 29 proposed facts rejected because their quote could not be found verbatim in the
+  window it came from. Reported separately from the 117 windows never read for want of a
+  cached response and a key, which is unread text rather than a failed extraction.
+  Combining the two would overstate the error rate fourfold.
+* 507 pairs left as `insufficient_context`, because a fact without a parseable period
+  cannot honestly be called contradictory.
 
-The two failures I would fix next are table column attribution, and canonicalisation
+The failures worth fixing next are table column attribution and canonicalisation
 over-merging: `amount` swept together "Net Assets Amount" and "Public and Rights Issues
-Amount", which is the over-merge risk named in the design, observed in practice.
-
-### What the committed run produces
-
-| | |
-| --- | --- |
-| documents / pages | 6 / 511 |
-| facts stored | 490, **all 490 resolved to a page and verified against it** |
-| facts carrying a period | 321 (66%) |
-| relations | 646 |
-| corroborates / reconciled / contradicts | 37 / 79 / 23 |
-| rejected as ungrounded | 29 (plus 117 windows never read) |
-| model calls needed to reproduce | **0** — 100 are committed |
-
----
-
-## Approach
-
-### The problem is comparability, not extraction
-
-The starter documents all have a clean text layer, so pulling numbers out is mostly
-plumbing. The hard part is deciding two facts are *about the same thing* before saying
-anything about whether they agree. Every interesting case turns on that:
-
-- `₹8,142 Cr` and `81,415.38` (₹ million) are the same revenue, a hundredfold apart.
-- `₹74,540.82 mn` and `₹81,415.38 mn` are both "FY24 revenue" and both correct, because
-  one is standalone and the other consolidated.
-- `6.4%` and `6.5%` are both "FY25 growth", one an advance estimate and one an actual.
-- `6.5%` (RBI) and `6.6%` (IMF) are the same metric over the same period and genuinely
-  differ.
-
-So the design puts its weight into the fact representation and the normalisers. A fact
-carries its own qualifiers — metric, entity, period, unit scale, reporting basis, data
-vintage — and agreement mostly falls out of comparing them. Without that you end up
-writing per-document rules, which the brief rules out and which would not survive a PDF
-nobody has seen.
-
-### The model proposes, the rules verify
-
-The LLM is good at noticing that "revenue from services" and "Revenue from Operations"
-might be the same metric, and bad at being checkable. Arithmetic is the reverse. So the
-model gets wide latitude to find and propose, and every quantitative claim it makes is
-re-derived independently:
-
-- It extracts facts, but a fact is discarded unless its quote is found **verbatim** in
-  the source window. Grounding is a guarantee, not an intention.
-- It adjudicates pairs the rules cannot settle, but when it claims two figures reconcile
-  by a scale change, the arithmetic has to agree. When it claims a difference in basis
-  explains a gap, the basis has to actually differ.
-- Where rule and model disagree, the pair is recorded as `needs_review` rather than
-  resolved. That disagreement is a real output, not a defect to hide.
-
-### Deciding what to decide
-
-The rule layer classifies each candidate pair before any model call:
-
-| Values | Periods | Qualifiers | Verdict |
-| --- | --- | --- | --- |
-| agree | any | none differ | `corroborates`, by rule |
-| agree | any | some differ | `corroborates` with the caveat recorded |
-| differ | either unknown | any | `insufficient_context` |
-| differ | both known | exactly one differs | model explains it |
-| differ | both known | none differ | model adjudicates a likely contradiction |
-| different units | any | any | `unrelated` |
-
-The third row matters more than it looks, and it is the row I got wrong first. An absent
-period means *unknown*, not "the same period as the other fact". Treating two undated
-facts as contemporaneous made every difference in their values look like a contradiction.
-Measured over two starter documents, that manufactured 1,480 false contradictions — 45%
-of all pairs — and left 99.5% of pairs needing a model call, which no free tier
-survives. Refusing to rule on undated pairs cut adjudication sevenfold and cost nothing,
-because every case worth demonstrating carries an explicit period on both sides.
-
-`insufficient_context` is an answer, not a failure. The pair is stored and visible; the
-system simply declines to claim something it cannot support.
+Amount".
 
 ### Engineering decisions and trade-offs
 
-- **SQLite, not a graph database.** Relations are one table with two foreign keys and the
-  queries are joins. The brief is explicit that a graph store is not itself the answer,
-  and one file means a grader runs one command with nothing to provision.
-- **A fixed core plus an open qualifier map.** A prospectus, an earnings deck and an IMF
-  staff report do not share a fact schema. Inventing one upfront means either something
-  so loose it says nothing or something that breaks on the first unfamiliar document.
-  Qualifier keys accumulate as documents introduce them, and no qualifier name is
-  hard-coded in the comparison logic.
-- **Everything cached by content hash.** Reruns are free, tests never touch the network,
-  and the committed cache is what lets this be evaluated without my account.
-- **Long-context windows, not pages.** Table headers and their rows have to reach the
-  model together, or every column is misattributed.
-- **No frontend build step.** Jinja templates and no JavaScript. The time is better spent
-  on reasoning quality, and the brief warns that visualisation alone is not the solution.
-- **A pinned model, not `-latest`.** The model name is part of every cache key, so a
-  floating alias would keep replaying old responses under a name that now means
-  something else. `gemini-3.6-flash` was chosen after measuring: the newest flash model
-  exhausted its free-tier quota within a handful of calls, and the lite variants returned
-  their JSON wrapped in an array. Override with `FACTLAYER_MODEL`.
-- **Extraction is defensive about its own inputs.** The model returns array-wrapped JSON,
-  drops units that were declared in a table header, and transcribes `₹` as `I` often
-  enough to matter. Each of those is handled at the boundary rather than assumed away,
-  because the alternative is a system that works on the documents I happened to test.
+* **SQLite rather than a graph database.** Relations are one table with two foreign keys
+  and the queries are joins. The brief is explicit that a graph store is not itself the
+  answer, and one file means nothing to provision.
+* **A fixed core plus an open qualifier map.** A prospectus, an earnings deck and an IMF
+  staff report do not share a fact schema. Inventing one upfront gives either something
+  so loose it says nothing, or something that breaks on the first unfamiliar document.
+  Qualifier keys accumulate as documents introduce them, and none is named in the
+  comparison logic.
+* **Every model call cached by content hash.** Reruns cost nothing, tests never touch the
+  network, and the committed cache is what makes the work reviewable without an account.
+* **Long-context windows rather than pages.** A table header and its rows have to reach
+  the model together or every column is misattributed.
+* **No frontend build step.** Jinja templates and no JavaScript.
+* **A pinned model rather than a floating alias.** The model name is part of every cache
+  key, so an alias would replay old responses under a name that had changed meaning.
 
 ### AI tools used
 
-An AI coding assistant was used throughout: to explore the starter documents, argue
-through the design, write code and tests, and — most usefully — to review the plan
-against itself before building. Several review passes found defects that reading alone
-had missed, and the ones that mattered were found by *running* code rather than reading
-it: evidence resolving to the wrong page, a missing period reading as a matching one,
-and a unit comparison that silently refused to compare the very figures the system
-exists to compare. Those are described in the limitations below because they shaped the
-design rather than merely being fixed.
+An AI coding assistant was used throughout: to explore the starter documents, work
+through the design, write code and tests, and review the plan before building. Several
+review passes found problems that reading alone had missed, and the ones that mattered
+came from running code rather than reading it. Three are described above because they
+changed the design: evidence resolving to the wrong page, a missing period reading as a
+matching one, and a unit comparison that refused to compare the figures the system exists
+to compare.
 
-`docs/design.md` is the design document from that process and is kept in the repository.
+`docs/design.md` is the design document from that process.
 
----
+## Limitations and Next Steps
 
-## Limitations and next steps
+What does not work yet:
 
-**What does not work yet, honestly:**
-
-- **Run-to-run variance.** The model sits in the discovery path, so the same PDF can
+* **Run-to-run variance.** The model sits in the discovery path, so the same PDF can
   yield slightly different facts across runs. Temperature is zero and the cache is
-  committed, so the demo and a first clone are stable in practice, but this is a real
-  property of the design rather than something solved.
-- **No OCR.** Image-only pages are detected and reported as gaps rather than silently
-  contributing nothing. The IMF cover page is one. Adding OCR is a contained change at
-  the ingest stage.
-- **Tables are the weakest link.** Multi-column financial tables flatten under text
-  extraction, and mapping a row of four numbers back to standalone-vs-consolidated and
-  FY24-vs-FY23 is where wrong facts are most likely to originate. Long-context windows
-  mitigate this; they do not solve it.
-- **Period coverage bounds everything.** A fact without a parseable period can never be
+  committed, so a clone is stable in practice, but this is a property of the design
+  rather than something solved.
+* **No OCR.** Image-only pages are detected and reported as gaps rather than silently
+  contributing nothing. Adding OCR is a contained change at the ingest stage.
+* **Tables are the weakest link.** Multi-column financial tables flatten under text
+  extraction, and mapping a row of four numbers back to standalone against consolidated,
+  and FY24 against FY23, is where wrong facts are most likely to originate.
+* **Period coverage bounds everything.** A fact without a parseable period can never be
   part of a contradiction, by design. 66% of stored facts carry one, and the rest are why
-  507 of 646 pairs sit in `insufficient_context`. Improving period attachment is the
-  single highest-value next step, because it decides how much of the corpus the system
-  can reason about at all. Coverage varies by document, not by model: the earnings deck
-  labels almost everything `FY24`, the prospectus is prose.
-- **Entity clustering can over-merge.** Two similarly named subsidiaries could collapse
-  into one canonical entity and manufacture a false contradiction. The threshold is
-  conservative and failures should surface in `needs_review`.
-- **Pairing is quadratic.** 0.39s at the roughly 1,250 facts the starter set produces and
-  2.2s at 3,000, so it is a non-issue at this size, but the blocking needs rewriting
-  before "many documents in one layer" is real.
-- **Recall is unmeasured, and budget-bound.** There is no labelled ground truth here, so
-  I can say every stored fact is grounded and verify it, but not what fraction of the
-  facts present were found. The committed run reads the densest windows of each document
-  rather than all 158, so recall is limited by the daily quota rather than by the
-  approach.
-- **Cache replay depends on ingest order**, because canonicalisation is incremental.
+  507 of 646 pairs sit in `insufficient_context`. Coverage varies by document rather than
+  by model: the earnings deck labels almost everything FY24, the prospectus is prose.
+* **Canonicalisation can over-merge.** Two similarly named metrics can collapse into one
+  canonical id and manufacture a false comparison. `amount` is a live example.
+* **Pairing is quadratic.** 0.39s at the roughly 1,250 facts the starter set produces and
+  2.2s at 3,000, so it is not a problem at this size, but the blocking needs rewriting
+  before many documents in one layer is realistic.
+* **Recall is unmeasured and budget-bound.** There is no labelled ground truth here, so
+  every stored fact can be shown to be grounded but not what fraction of the facts
+  present were found. The committed run reads the densest windows of each document rather
+  than all 158.
 
-**Next steps, in the order I would do them:**
+Next steps, in the order I would take them:
 
 1. Attach periods from section and table context rather than only the sentence, since
    that limit gates everything else.
 2. OCR fallback for image-only pages.
-3. Table-aware extraction that preserves the header-to-cell relationship explicitly
-   instead of hoping long context is enough.
+3. Table-aware extraction that preserves the header-to-cell relationship explicitly.
 4. Embedding-backed blocking so pairing stops being quadratic.
-5. A confidence-weighted view that ranks contradictions by how much evidence supports
-   each side.
+5. A confidence-weighted view ranking contradictions by how much evidence supports each
+   side.
 
----
+## Additional Notes
 
-## Additional notes
+**What ships, and what is computed.** The repository contains the six starter PDFs and
+100 cached model responses. It contains no facts, relations or verdicts: those are
+computed by the pipeline on every run, so what a reader sees is produced by the code
+rather than copied from a prepared database. The cache exists because the brief asks for
+enough sample output to evaluate the work without an account, and because the free tier
+cannot read this corpus in a day.
 
-- No credentials are in the repository. `.env` is gitignored; `.env.example` shows the
-  shape.
-- `docs/design.md` records the design, the trade-offs, and what is known not to work.
-- The commit history is the real working history rather than a squashed import.
+**Nothing is hard-coded to these documents.** `tests/test_no_hardcoding.py` enforces that
+rather than asserting it. It reads the source and fails if any string literal in a code
+path names one of these documents, companies or metrics; docstrings explaining why a rule
+exists are exempt, code is not. It also pins the only fixed vocabularies as generic roles
+such as `source` and `basis`, and checks that a qualifier key the system has never seen is
+compared correctly without code changes.
+
+**Figures from the committed run:**
+
+| | |
+| --- | --- |
+| documents / pages | 6 / 511 |
+| facts stored | 490, all resolved to a page and verified against it |
+| facts carrying a period | 321 (66%) |
+| relations | 646 |
+| corroborates / reconciled / contradicts | 37 / 79 / 23 |
+| ungrounded facts rejected | 29 |
+| model calls needed to reproduce | 0, since 100 are committed |
+| tests | 140, no network access required |
+
+No credentials are in the repository. `.env` is gitignored and `.env.example` shows the
+shape.
