@@ -20,10 +20,14 @@
   </tbody>
 </table>
 
-<h2>Facts rejected as ungrounded ({{ rejected|length }})</h2>
+<h2>Facts rejected as ungrounded ({{ ungrounded_count }})</h2>
 <p class="muted">
   A fact is kept only if its quote is found verbatim in the window it came from.
   These failed that check, so they were never stored as facts.
+  {% if unread_count %}
+  Listed separately below are {{ unread_count }} windows that were never read at all
+  for want of a cached response and an API key — unread text, not a rejected fact.
+  {% endif %}
 </p>
 <table>
   <thead><tr><th>Document</th><th>Why</th><th>What was proposed</th></tr></thead>

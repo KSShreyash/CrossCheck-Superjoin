@@ -123,8 +123,19 @@ def main() -> int:
             "SELECT d.filename, g.page_no, g.reason FROM gaps g "
             "JOIN documents d ON d.id = g.doc_id ORDER BY d.id, g.page_no"):
         print(f"    unreadable  {g['filename']} page {g['page_no']}: {g['reason']}")
-    rej = conn.execute("SELECT COUNT(*) FROM rejected_facts").fetchone()[0]
-    print(f"    ungrounded  {rej} proposed facts rejected: quote not found in source")
+    # These are different things and must not be added together: one is a
+    # quality signal about extraction, the other is simply text nobody read.
+    ungrounded = conn.execute(
+        "SELECT COUNT(*) FROM rejected_facts WHERE reason LIKE '%not found%'"
+    ).fetchone()[0]
+    unread = conn.execute(
+        "SELECT COUNT(*) FROM rejected_facts WHERE reason LIKE '%no cached%'"
+    ).fetchone()[0]
+    print(f"    ungrounded  {ungrounded} proposed facts rejected: quote not found "
+          f"in the source window")
+    if unread:
+        print(f"    unread      {unread} windows skipped: no cached response and no "
+              f"API key (not a failure, just unread)")
     review = conn.execute(
         "SELECT COUNT(*) FROM relations WHERE final_verdict='needs_review'"
     ).fetchone()[0]

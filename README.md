@@ -202,9 +202,12 @@ measure corroborates when the dates agree and reconciles when they do not.
 - **6 unreadable pages**, found without any model: the IMF cover page yields no text at
   all, four earnings-deck slides are images, and prospectus p63 gives 53 characters.
   Recorded as gaps with reasons rather than silently contributing nothing.
-- **107 proposed facts rejected** because their quote could not be found verbatim in the
+- **29 proposed facts rejected** because their quote could not be found verbatim in the
   window it came from. This is why every stored fact is grounded rather than intended to
-  be, and the audit script lets you check that claim rather than take it.
+  be, and the audit script lets you check that claim rather than take it. Reported
+  separately from the **117 windows never read at all**, for want of a cached response
+  and a key — that is unread text, not a failed extraction, and adding the two together
+  would overstate the error rate fourfold.
 - **507 pairs left undecided** as `insufficient_context`, because a fact without a
   parseable period cannot honestly be called contradictory. An earlier version treated a
   missing period as a matching one and manufactured 1,480 false contradictions — 45% of
@@ -223,7 +226,7 @@ Amount", which is the over-merge risk named in the design, observed in practice.
 | facts carrying a period | 321 (66%) |
 | relations | 646 |
 | corroborates / reconciled / contradicts | 37 / 79 / 23 |
-| rejected as ungrounded | 107 |
+| rejected as ungrounded | 29 (plus 117 windows never read) |
 | model calls needed to reproduce | **0** — 100 are committed |
 
 ---

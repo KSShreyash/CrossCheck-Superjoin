@@ -264,9 +264,18 @@ def page_gaps(request: Request):
     rows = _rows(conn.execute(
         "SELECT g.page_no, g.reason, d.filename, d.id AS doc_id "
         "FROM gaps g JOIN documents d ON d.id=g.doc_id ORDER BY d.id, g.page_no"))
+    # A fact whose quote did not hold up and a window nobody read are different
+    # things; counting them together overstates the failure rate.
     rejected = _rows(conn.execute(
         "SELECT r.payload, r.reason, d.filename FROM rejected_facts r "
-        "JOIN documents d ON d.id=r.doc_id ORDER BY r.id LIMIT 200"))
+        "JOIN documents d ON d.id=r.doc_id WHERE r.reason LIKE '%not found%' "
+        "ORDER BY r.id LIMIT 200"))
+    counts = dict(conn.execute(
+        "SELECT CASE WHEN reason LIKE '%no cached%' THEN 'unread' "
+        "ELSE 'ungrounded' END AS kind, COUNT(*) FROM rejected_facts "
+        "GROUP BY kind").fetchall())
     return templates.TemplateResponse(
-        request, "gaps.html", { "stats": stats(),
-                      "gaps": rows, "rejected": rejected})
+        request, "gaps.html", {"stats": stats(), "gaps": rows,
+                               "rejected": rejected,
+                               "ungrounded_count": counts.get("ungrounded", 0),
+                               "unread_count": counts.get("unread", 0)})

@@ -99,9 +99,20 @@ def main() -> int:
         print(f"\n  fact {r['id']} claims {r['filename']} page {r['page_no']}")
         print(f"    quote: {norm(r['quote'])[:110]}")
 
-    rejected = conn.execute("SELECT COUNT(*) FROM rejected_facts").fetchone()[0]
-    print(f"\n{rejected} proposed facts were rejected before storage for failing "
+    # Two different things live in rejected_facts and adding them together
+    # overstates the failure rate: one is a fact whose quote did not hold up,
+    # the other is a window nobody read.
+    ungrounded = conn.execute(
+        "SELECT COUNT(*) FROM rejected_facts WHERE reason LIKE '%not found%'"
+    ).fetchone()[0]
+    unread = conn.execute(
+        "SELECT COUNT(*) FROM rejected_facts WHERE reason LIKE '%no cached%'"
+    ).fetchone()[0]
+    print(f"\n{ungrounded} proposed facts were rejected before storage for failing "
           f"the same check at extraction time.")
+    if unread:
+        print(f"{unread} windows were never read at all: no cached response and no "
+              f"API key. That is unread text, not a rejected fact.")
 
     if failures or unplaced:
         print("\nRESULT: grounding is incomplete")
