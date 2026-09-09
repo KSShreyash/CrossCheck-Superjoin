@@ -67,7 +67,9 @@ one day. Three things follow, and they shaped the design:
 
 ## Video Demo
 
-<!-- TODO: add the link once recorded -->
+https://drive.google.com/drive/folders/1Hq7L3n2OgYO-Q_YT-z-87yeXvPEElHGl?usp=sharing
+
+The video shows a PDF being processed and the four cases below.
 
 ## Approach
 
