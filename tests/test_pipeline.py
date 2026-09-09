@@ -366,3 +366,38 @@ def test_uncached_windows_are_skipped_not_fatal_when_replaying(tmp_path, make_pd
     reasons = [r[0] for r in conn.execute(
         "SELECT reason FROM rejected_facts WHERE doc_id=?", (doc_id,))]
     assert any("no cached response" in r for r in reasons)
+
+
+def test_the_pair_that_trips_a_failure_is_not_penalised_for_being_first(tmp_path):
+    # When adjudication becomes unavailable mid-pass, the pair whose call
+    # raised must be classified the same way as every pair after it. Filing it
+    # as undecided purely for being first made the output depend on which pair
+    # happened to sort first, so two identical corpora disagreed by one.
+    from factlayer.pipeline import build_relations
+    conn = connect(tmp_path / "t.sqlite")
+    init_schema(conn)
+    conn.execute("INSERT INTO documents(id,sha256,filename,page_count) "
+                 "VALUES (1,'a','a.pdf',1),(2,'b','b.pdf',1)")
+    for fid, doc, val in ((1, 1, "6.5"), (2, 2, "6.6"), (3, 1, "7.5"), (4, 2, "7.6")):
+        conn.execute(
+            "INSERT INTO facts(id,doc_id,subject,metric,value_raw,unit_raw,"
+            "period_raw,qualifiers,claim_type,confidence,canon_value,canon_unit,"
+            "period_start,period_end,entity_id,metric_id) VALUES "
+            "(?,?,'India','growth',?,'per cent','FY26','{}','measurement',0.9,?,"
+            "'PERCENT','2025-04-01','2026-03-31','india',?)",
+            (fid, doc, val, float(val), "g" if fid < 3 else "h"))
+        conn.execute("INSERT INTO evidence(fact_id,quote,page_no) VALUES (?,?,1)",
+                     (fid, f"value {val}"))
+    conn.commit()
+
+    class AlwaysFails:
+        def complete_json(self, prompt, version, **kw):
+            raise RuntimeError("quota gone")
+
+    build_relations(conn, AlwaysFails())
+    verdicts = [r[0] for r in conn.execute(
+        "SELECT final_verdict FROM relations WHERE rule_verdict='contradiction_candidate'")]
+    assert verdicts, "the fixture must produce contradiction candidates"
+    assert set(verdicts) == {"contradicts"}, (
+        "every contradiction candidate is reported the same way, including the "
+        f"one whose call raised; got {verdicts}")

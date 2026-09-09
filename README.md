@@ -190,7 +190,7 @@ the dates agree and reconciles when they do not.
   window it came from. Reported separately from the 117 windows never read for want of a
   cached response and a key, which is unread text rather than a failed extraction.
   Combining the two would overstate the error rate fourfold.
-* 507 pairs left as `insufficient_context`, because a fact without a parseable period
+* 506 pairs left as `insufficient_context`, because a fact without a parseable period
   cannot honestly be called contradictory.
 
 The failures worth fixing next are table column attribution and canonicalisation
@@ -242,7 +242,7 @@ What does not work yet:
   and FY24 against FY23, is where wrong facts are most likely to originate.
 * **Period coverage bounds everything.** A fact without a parseable period can never be
   part of a contradiction, by design. 66% of stored facts carry one, and the rest are why
-  507 of 646 pairs sit in `insufficient_context`. Coverage varies by document rather than
+  506 of 646 pairs sit in `insufficient_context`. Coverage varies by document rather than
   by model: the earnings deck labels almost everything FY24, the prospectus is prose.
 * **Canonicalisation can over-merge.** Two similarly named metrics can collapse into one
   canonical id and manufacture a false comparison. `amount` is a live example.
@@ -288,7 +288,7 @@ compared correctly without code changes.
 | facts stored | 490, all resolved to a page and verified against it |
 | facts carrying a period | 321 (66%) |
 | relations | 646 |
-| corroborates / reconciled / contradicts | 37 / 79 / 23 |
+| corroborates / reconciled / contradicts | 37 / 79 / 24 |
 | ungrounded facts rejected | 29 |
 | model calls needed to reproduce | 0, since 100 are committed |
 | tests | 140, no network access required |

@@ -238,6 +238,23 @@ def _fetch_quote(conn, fact_id: int) -> str:
     return row["quote"] if row else ""
 
 
+def _rules_only_verdict(rule_verdict: str) -> tuple[str, str | None, str]:
+    """What to record when no adjudication is available.
+
+    A contradiction candidate is not an absence of evidence: metric, period
+    and unit all match and the values do not, which is a disagreement whether
+    or not a model has blessed it. Filing that as "insufficient context" would
+    hide a real finding behind a missing API call.
+    """
+    if rule_verdict == "contradiction_candidate":
+        return ("contradicts", "genuine_disagreement",
+                "Same metric, period and unit; the values differ and no recorded "
+                "qualifier distinguishes them. Decided by rule alone; no model "
+                "review.")
+    return ("insufficient_context", None,
+            "no adjudication available for this pair")
+
+
 def _write_relation(conn, fact_a, fact_b, rule_v, model_v, final, reason,
                     explanation, diff, transform, verified, agreed, confidence):
     conn.execute(
@@ -307,15 +324,7 @@ def build_relations(conn: sqlite3.Connection, client,
             # disagreement whether or not a model has blessed it. Filing that
             # as "insufficient context" would hide a real finding behind a
             # missing API call. It is recorded as unreviewed, not as agreed.
-            if rv == "contradiction_candidate":
-                final = "contradicts"
-                reason_code = "genuine_disagreement"
-                explanation = ("Same metric, period and unit; the values differ "
-                               "and no recorded qualifier distinguishes them. "
-                               "Decided by rule alone; no model review.")
-            else:
-                final = "insufficient_context"
-                explanation = "no adjudication available for this pair"
+            final, reason_code, explanation = _rules_only_verdict(rv)
         else:
             calls += 1
             try:
@@ -323,12 +332,16 @@ def build_relations(conn: sqlite3.Connection, client,
                                  meta[ids[i]], meta[ids[j]])
             except Exception as exc:               # noqa: BLE001
                 # Running out mid-pass must not discard the pairs already
-                # classified, nor the many that rules alone can settle.
+                # classified, nor the many that rules alone can settle. The
+                # pair that happened to trigger the failure gets the same
+                # rules-only treatment as every pair after it, or it would be
+                # filed as undecided purely for being first.
                 exhausted = True
-                final = "insufficient_context"
-                explanation = f"no adjudication available: {type(exc).__name__}"
-                _write_relation(conn, ids[i], ids[j], rv, None, final, None,
-                                explanation, diff, None, None, None, None)
+                final, reason_code, explanation = _rules_only_verdict(rv)
+                explanation = f"{explanation} ({type(exc).__name__})"
+                _write_relation(conn, ids[i], ids[j], rv, None, final,
+                                reason_code, explanation, diff,
+                                None, None, None, None)
                 written += 1
                 continue
             model_verdict = out["verdict"]
