@@ -12,10 +12,10 @@
     and takes a few seconds — but the facts and relations are computed by the pipeline
     rather than shipped, so it has to run once:
   </p>
-  <pre>python scripts/ingest_starter.py /path/to/starter-datasets --max-windows-per-doc 25</pre>
+  <pre>python scripts/ingest_starter.py</pre>
   <p>
-    Point it at the documents supplied with the assignment; it searches recursively, so
-    either folder level works. Then reload this page. Any other folder of PDFs works too,
+    The starter documents are bundled with the repository, so that command needs no
+    arguments. Then reload this page. Pass a path to read any other folder of PDFs,
     though a document the cache has never seen needs a <code>GEMINI_API_KEY</code> in
     <code>.env</code>. You can also upload a single PDF using the form below.
   </p>

@@ -62,7 +62,9 @@ def dry_run(pdfs) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("root", help="directory to search for PDFs")
+    ap.add_argument("root", nargs="?", default=None,
+                    help="directory to search for PDFs; defaults to the "
+                         "starter-datasets folder bundled with the repository")
     ap.add_argument("--db", default=str(settings.db_path))
     ap.add_argument("--max-model-calls", type=int, default=None,
                     help="cap adjudication calls to stay inside a free tier")
@@ -75,9 +77,11 @@ def main() -> int:
                          "without making any")
     args = ap.parse_args()
 
-    pdfs = sorted(Path(args.root).rglob("*.pdf"), key=lambda p: str(p).lower())
+    root = Path(args.root) if args.root else (
+        Path(__file__).resolve().parents[1] / "starter-datasets")
+    pdfs = sorted(root.rglob("*.pdf"), key=lambda p: str(p).lower())
     if not pdfs:
-        print(f"no PDFs under {args.root}")
+        print(f"no PDFs under {root}")
         return 1
     if args.limit:
         pdfs = pdfs[:args.limit]

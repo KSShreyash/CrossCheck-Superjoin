@@ -15,28 +15,34 @@ Requires Python 3.11 or newer.
 git clone https://github.com/KSShreyash/CrossCheck-Superjoin.git
 cd CrossCheck-Superjoin
 pip install -e ".[dev]"
+
+python scripts/ingest_starter.py     # builds the knowledge layer, ~3s, no API key
+python scripts/serve.py              # then open http://127.0.0.1:8000
 ```
 
-**No API key is needed to reproduce everything below.** The model responses are committed
-under `cache/`, so the pipeline replays them offline. A key is only needed to read a PDF
-the cache has never seen.
+That is everything. The starter documents are bundled under `starter-datasets/` and the
+model responses are committed under `cache/`, so **no API key is needed** and nothing has
+to be supplied. A key is only needed to read a PDF the cache has never seen.
 
-The starter PDFs are not redistributed here — they are the documents supplied with the
-assignment. Point the ingest script at wherever you keep them:
+Two more commands worth running:
 
 ```bash
-python scripts/ingest_starter.py /path/to/starter-datasets --max-windows-per-doc 25
-python scripts/show_cases.py            # the four required cases, with evidence
-python scripts/audit_grounding.py       # re-checks every quote against its source page
-uvicorn factlayer.api:app               # then open http://127.0.0.1:8000
+python scripts/show_cases.py         # the four required cases, with their evidence
+python scripts/audit_grounding.py    # re-checks every quote against its source page
 ```
 
-The first command takes about three seconds and makes no network requests. It finds PDFs
-recursively, so either level of the supplied `starter-datasets/` folder works. Any other
-folder of PDFs works too — a document the cache has not seen simply needs a key.
+`scripts/serve.py` is used rather than `uvicorn factlayer.api:app` because it works from a
+bare checkout — it puts `src/` on the path itself, as the other scripts do. If
+`pip install -e .` succeeded then `uvicorn factlayer.api:app` is equivalent.
 
-To ingest your own PDFs, put a key in `.env` (gitignored; a free one comes from
-<https://aistudio.google.com/apikey>):
+`ingest_starter.py` takes an optional path, so any other folder of PDFs works:
+
+```bash
+python scripts/ingest_starter.py /some/other/folder
+```
+
+To ingest PDFs the cache has never seen, put a key in `.env` (gitignored; a free one comes
+from <https://aistudio.google.com/apikey>):
 
 ```
 GEMINI_API_KEY=your_key_here
@@ -116,8 +122,9 @@ what is and is not shipped:
 
 | shipped | not shipped |
 | --- | --- |
-| 100 cached model responses, keyed by a hash of the prompt | any fact, relation or verdict |
-| the canonical term mapping the model produced | any list of expected metrics or entities |
+| the six starter PDFs, so nothing has to be supplied | any fact, relation or verdict |
+| 100 cached model responses, keyed by a hash of the prompt | any list of expected metrics or entities |
+| the canonical term mapping the model produced | any hand-written result |
 
 **Facts and relations are recomputed from those responses on every run**, by the code in
 this repository. Nothing you see was written into a database by hand. The cache exists
