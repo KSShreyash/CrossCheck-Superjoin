@@ -7,12 +7,7 @@ _WS = re.compile(r"\s+")
 
 
 def locate_quote(haystack: str, quote: str) -> tuple[int, int] | None:
-    """Find quote in haystack, tolerating differences in whitespace only.
-
-    The model copies from window text that still carries the PDF's own line
-    breaks, so an otherwise verbatim quote often differs only in whitespace.
-    Anything beyond that is treated as ungrounded and rejected.
-    """
+    """Find quote in haystack, tolerating differences in whitespace only."""
     if not quote:
         return None
     idx = haystack.find(quote)
@@ -45,13 +40,7 @@ def locate_quote(haystack: str, quote: str) -> tuple[int, int] | None:
 
 
 def _as_text(value) -> str | None:
-    """Coerce a model-supplied scalar to text.
-
-    JSON has numbers, and a model asked for "the number exactly as printed"
-    will sometimes oblige with 6.5 rather than "6.5". Everything downstream
-    treats these as strings, so the conversion belongs here, at the boundary
-    where untrusted data arrives, rather than as a guard at every use.
-    """
+    """Coerce a model-supplied scalar to text."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -104,16 +93,7 @@ def extract_facts(client, window: Window, doc_id: int
 
 
 def dedupe_facts(facts: list[Fact]) -> list[Fact]:
-    """Collapse facts re-extracted from the overlap between windows.
-
-    Windows overlap so that a fact straddling a boundary is not lost, but that
-    puts about a tenth of blocks in two windows and their facts arrive twice.
-    Left alone the twins pair with each other and register as corroborations,
-    inflating the counts with a sentence agreeing with itself.
-
-    Keyed per document, so the same fact appearing in a DIFFERENT document
-    survives: that one is a real cross-document corroboration.
-    """
+    """Collapse facts re-extracted from the overlap between windows."""
     best: dict[tuple, Fact] = {}
     for f in facts:
         key = (f.doc_id, str(f.subject).strip().lower(),

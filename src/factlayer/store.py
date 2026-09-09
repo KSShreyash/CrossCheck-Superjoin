@@ -10,10 +10,7 @@ def save_document(conn: sqlite3.Connection, sha: str, filename: str,
         "INSERT OR IGNORE INTO documents(sha256, filename, title, page_count) "
         "VALUES (?,?,?,?)", (sha, filename, title, pages))
     conn.commit()
-    # rowcount is 1 when the row was inserted and 0 when it was ignored.
-    # Do NOT branch on lastrowid: when the insert is ignored it still reports
-    # the connection's previous successful insert, so re-uploading a document
-    # would return some other document's id and attach facts to the wrong file.
+    # rowcount distinguishes insert from ignore; lastrowid does not
     if cur.rowcount:
         return cur.lastrowid
     return conn.execute("SELECT id FROM documents WHERE sha256=?",
@@ -35,12 +32,7 @@ def save_blocks(conn: sqlite3.Connection, doc_id: int,
 
 
 def _blocks_covering(window: Window, span: tuple[int, int]) -> list[int]:
-    """Window block positions the span overlaps, using recorded spans.
-
-    Do not derive these by splitting window.text on newlines: block text
-    contains its own newlines, so the split silently misattributes the quote
-    to a later block and reports the wrong page and bounding box.
-    """
+    """Window block positions the span overlaps, using recorded spans."""
     return [pos for pos, (start, end) in enumerate(window.block_spans)
             if span[0] < end and span[1] > start]
 
@@ -70,9 +62,7 @@ def save_fact(conn: sqlite3.Connection, fact: Fact, window: Window,
             "SELECT id,page_no,x0,y0,x1,y1 FROM blocks WHERE id IN "
             "(" + placeholders + ") ORDER BY id", row_ids).fetchall()
         page_no = rows[0]["page_no"]
-        # A quote can straddle a page break. Union the boxes only within the
-        # page the quote starts on: merging a box at the foot of one page with
-        # one at the head of the next produces a rectangle on neither page.
+        # a quote can straddle a page break, so keep the box on its starting page
         same_page = [r for r in rows if r["page_no"] == page_no]
         bbox = (min(r["x0"] for r in same_page), min(r["y0"] for r in same_page),
                 max(r["x1"] for r in same_page), max(r["y1"] for r in same_page))

@@ -1,9 +1,5 @@
 """Ingest a directory of PDFs and build the relations between them.
 
-Ingest order is fixed and sorted. Canonicalisation is incremental, so its
-prompt - and therefore its cache key - reflects what was ingested before it.
-Replaying the committed cache requires the same order.
-
     python scripts/ingest_starter.py ../starter-datasets/starter-datasets
 """
 import argparse
@@ -13,8 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-# Windows defaults stdout to cp1252, which cannot encode the rupee sign these
-# documents are full of. Redirecting output to a file would otherwise crash.
+# Windows stdout defaults to cp1252, which cannot encode the rupee sign
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -118,9 +113,7 @@ def main() -> int:
             print(f"    stopped: {exc}")
             return 2
         except Exception as exc:                   # noqa: BLE001
-            # A daily quota running out mid-corpus must not discard the work
-            # already done. Stop reading, keep what was extracted, and carry on
-            # to the phases that can still run.
+            # a spent quota must not discard the documents already read
             print(f"    stopped reading: {type(exc).__name__}: {str(exc)[:100]}")
             exhausted = True
             continue

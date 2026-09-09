@@ -15,21 +15,13 @@ def _known(conn, kind: str) -> dict[str, tuple[str, str]]:
 
 def canonicalise(client, conn, kind: str,
                  raw_terms: list[str]) -> dict[str, tuple[str, str]]:
-    """Map each raw term to a canonical id, reusing groups already assigned.
-
-    Only terms never seen before are sent to the model, so re-ingesting costs
-    nothing, but the groups that already exist are always shown so a term from
-    a later document can join one.
-    """
+    """Map each raw term to a canonical id, reusing groups already assigned."""
     mapping = _known(conn, kind)
     pending = sorted({t for t in raw_terms if t and t not in mapping})
     if not pending:
         return {t: mapping[t] for t in raw_terms if t in mapping}
 
-    # Offer the groups already assigned. Without this a term from a document
-    # ingested later can never join an existing group, the same metric ends up
-    # with two canonical ids, and facts stop pairing across documents entirely
-    # - which is the one thing this system exists to do.
+    # offer existing groups, or a later document can never join one
     existing = {cid: label for cid, label in mapping.values()}
     prompt = build_canon_prompt(kind, pending, existing)
     data = client.complete_json(prompt, CANON_PROMPT_VERSION)

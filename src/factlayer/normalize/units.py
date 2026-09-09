@@ -15,11 +15,7 @@ _SCALE_WORDS = re.compile(
 
 
 def units_compatible(a: str | None, b: str | None) -> bool:
-    """Two facts are unit-incompatible only when both units are known.
-
-    UNKNOWN means the dimension was not recorded, which is a gap in what we
-    read rather than evidence that the two measure different things.
-    """
+    """Two facts are unit-incompatible only when both units are known."""
     if not a or not b or a == "UNKNOWN" or b == "UNKNOWN":
         return True
     return a == b
@@ -50,11 +46,7 @@ def _scale_from(text: str) -> float:
     return 1.0
 
 
-# A unit field is a constrained vocabulary, so a lone letter or stray mark
-# sitting where a currency symbol belongs is a mangled glyph rather than a
-# word. Models transcribe the rupee sign as "I" or a backtick often enough
-# that "I in Million" would otherwise normalise to a bare count and never
-# match the same figure printed in crore.
+# in a unit field, a lone letter before a scale word is a mangled currency
 _MANGLED_RUPEE = re.compile(r"(^|[\s(])[i`¹¦](?=\s*(in\s+)?"
                             r"(million|mn|crore|cr|lakh|billion|bn|thousand)\b)",
                             re.I)
@@ -62,17 +54,7 @@ _MANGLED_RUPEE = re.compile(r"(^|[\s(])[i`¹¦](?=\s*(in\s+)?"
 
 def normalize_value(value_raw: str | None, unit_raw: str | None,
                     context: str | None = None) -> tuple[float, str] | None:
-    """Reduce a printed value and its unit to a magnitude in a base unit.
-
-    Returns None when there is no number to parse. Percentages keep their
-    printed magnitude; everything else is multiplied by its scale word so
-    that "8,142 Cr" and "81,415.38 million" land on the same number.
-
-    `context` is the verbatim source span the fact came from. It is consulted
-    only for the currency, and only when the unit field does not name one:
-    the quote is real document text, so it is the more reliable witness when
-    a symbol has been dropped or garbled on the way through the model.
-    """
+    """Reduce a printed value and its unit to a magnitude in a base unit."""
     number = _parse_number(value_raw)
     if number is None:
         return None
@@ -96,12 +78,7 @@ def normalize_value(value_raw: str | None, unit_raw: str | None,
             if re.search(pattern, source):
                 return number * scale, code
 
-    # Strip the scale words and punctuation. If nothing is left, the unit named
-    # a magnitude and no dimension - "(Rs in Million)" declared in a table
-    # header and dropped on the way out, say. That is an unknown dimension, not
-    # a count of things, and the distinction matters: the same revenue printed
-    # as "81,415.38 million" in one document and "Rs 8,142 Cr" in another must
-    # still be comparable. Unknown is not the same as different.
+    # strip scale words: nothing left means the dimension is unknown, not a count
     residue = _SCALE_WORDS.sub(" ", f" {unit_raw or ''} ".lower())
     residue = re.sub(r"[^a-z]+", "", residue)
     if not residue:
@@ -110,13 +87,7 @@ def normalize_value(value_raw: str | None, unit_raw: str | None,
 
 
 def significant_figures(raw: str | None) -> int | None:
-    """How precisely a number was printed, in significant figures.
-
-    "1.4" claims two, "1,429" claims four. Trailing zeros before the decimal
-    point are ambiguous in general and are not counted, which errs towards
-    treating a round number as less precise than it might be - the safe
-    direction, since it makes the comparison more forgiving rather than less.
-    """
+    """How precisely a number was printed, in significant figures."""
     if raw is None:
         return None
     digits = re.sub(r"[^\d.]", "", str(raw))
@@ -139,14 +110,7 @@ def _round_to(value: float, figures: int) -> float:
 
 def values_agree(a: float | None, b: float | None, tol: float,
                  a_raw: str | None = None, b_raw: str | None = None) -> bool:
-    """Whether two canonical values report the same quantity.
-
-    Relative tolerance absorbs ordinary rounding. Beyond that, two documents
-    routinely print the same figure at different precision - an earnings deck
-    says "1.4 Mn Tons" where the annual report says "1,429K tonnes" - and a
-    flat tolerance cannot express that. When the printed values are available,
-    they are also compared at whichever precision is the coarser of the two.
-    """
+    """Whether two canonical values report the same quantity."""
     if a is None or b is None:
         return False
     if a == b:

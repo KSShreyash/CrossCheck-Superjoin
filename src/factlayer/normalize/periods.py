@@ -26,12 +26,7 @@ def _expand(yy: int) -> int:
 
 
 def normalize_period(period_raw: str | None) -> tuple[str, str, str] | None:
-    """Parse a printed period into (start, end, kind).
-
-    Handles the notations these documents actually mix: Indian FY24, the
-    IMF's FY2025/26 for the same year, 2024-25, quarters, instants such as
-    "as on March 31, 2024", and calendar years.
-    """
+    """Parse a printed period into (start, end, kind)."""
     if not period_raw:
         return None
     t = re.sub(r"\s+", " ", str(period_raw)).strip().lower()

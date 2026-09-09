@@ -67,16 +67,13 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    # background ingest writes while the UI polls; without this the reader
-    # raises "database is locked" instead of waiting for the writer
+    # background ingest writes while the UI polls, so wait rather than fail
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
-# Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves an
-# existing table untouched, so a database made by an earlier version needs the
-# new column adding explicitly rather than silently failing on the next query.
+# CREATE TABLE IF NOT EXISTS skips existing tables, so add columns here
 _ADDED_COLUMNS = [
     ("documents", "ingest_complete", "INTEGER DEFAULT 0"),
 ]
@@ -102,13 +99,7 @@ SHIPPED_CACHE = Path(__file__).resolve().parents[2] / "cache" / "starter_cache.s
 
 def seed_from_shipped_cache(conn: sqlite3.Connection,
                             path: Path | None = None) -> int:
-    """Load the committed responses so the starter corpus replays without a key.
-
-    Only the model responses and the canonical term mapping are shipped, not
-    facts or relations: everything else is recomputed from them, so the results
-    a grader sees are produced by this code rather than copied from a database
-    I prepared. Returns the number of cached responses loaded.
-    """
+    """Load the committed responses so the starter corpus replays without."""
     path = path or SHIPPED_CACHE
     if not path.exists():
         return 0

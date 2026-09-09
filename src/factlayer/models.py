@@ -18,8 +18,6 @@ class Window:
     text: str
     block_ids: list[int]
     # char span of each block inside `text`, parallel to block_ids.
-    # Recorded at build time because block text contains its own newlines,
-    # so splitting the window on "\n" does not recover block boundaries.
     block_spans: list[tuple[int, int]] = field(default_factory=list)
     density: float = 0.0
 

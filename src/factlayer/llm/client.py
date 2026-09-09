@@ -28,15 +28,7 @@ _QUOTA = ("429", "rate limit", "resource_exhausted", "resourceexhausted",
 
 
 def _is_quota(exc: Exception) -> bool:
-    """Any refusal on grounds of allowance, per-minute or per-day alike.
-
-    The two are not reliably distinguishable - the daily quota id is only
-    sometimes attached - and under a per-model allowance the response is the
-    same either way. Waiting is the wrong move: every attempt is itself a
-    counted request, so sleeping and retrying spends more of exactly the thing
-    that just ran out. Rotating to the next model costs nothing and may
-    succeed immediately.
-    """
+    """Any refusal on grounds of allowance, per-minute or per-day alike."""
     if isinstance(exc, (BadModelJSON, NoAPIKey, DailyQuotaExhausted)):
         return False
     blob = f"{type(exc).__name__} {exc}".lower()
@@ -72,14 +64,7 @@ def _unwrap(data):
 
 
 def _scan_values(text: str) -> list:
-    """Every complete JSON value in the text, in order.
-
-    Models do not reliably return one object. They return it fenced in
-    markdown, wrapped in an array, prefixed with a sentence, or as several
-    objects back to back. Scanning for complete values handles all of those,
-    where a single greedy match would join two valid objects into one invalid
-    blob and throw the lot away.
-    """
+    """Every complete JSON value in the text, in order."""
     decoder = json.JSONDecoder()
     values, i, n = [], 0, len(text)
     while i < n:
@@ -98,12 +83,7 @@ def _scan_values(text: str) -> list:
 
 
 def _is_envelope(value) -> bool:
-    """A result of the shape the prompts ask for: {"facts": [...]} and such.
-
-    Salvaging has to stop short of accepting a fragment. A response truncated
-    inside its list leaves complete inner objects lying around, and returning
-    one of those would look like success while carrying none of the payload.
-    """
+    """A result of the shape the prompts ask for: {"facts": [...]} and such."""
     return isinstance(value, dict) and any(
         isinstance(v, list) for v in value.values())
 
@@ -116,8 +96,7 @@ def _loads_lenient(text: str) -> dict:
                      if _is_envelope(v) or _is_envelope(_unwrap(v))]
         if envelopes:
             return _unwrap(envelopes if len(envelopes) > 1 else envelopes[0])
-        # Keep a sample. Without it a failure is only a character count, and
-        # "truncated" and "the model wrote prose" look identical in the log.
+        # keep a sample, or a failure is only a character count
         sample = re.sub(r"\s+", " ", text)[:240]
         raise BadModelJSON(
             f"could not parse model output ({len(text)} chars). "
@@ -125,14 +104,7 @@ def _loads_lenient(text: str) -> dict:
 
 
 class LLMClient:
-    """Cached Gemini client that can fall through exhausted models and keys.
-
-    The free tier counts requests per day per project per model, so when one
-    model's allowance is gone the next one still has its own. Rotation moves on
-    rather than failing. Note that the model name is part of every cache key:
-    replaying a cached corpus needs the same rotation to happen again, which is
-    why the order is fixed rather than random.
-    """
+    """Cached Gemini client that can fall through exhausted models and keys."""
 
     def __init__(self, conn: sqlite3.Connection, api_key: str | None, model: str,
                  models: list[str] | None = None,
@@ -164,15 +136,13 @@ class LLMClient:
     _GENERATION = {
         "temperature": 0,
         "response_mime_type": "application/json",
-        # a 12k-char window can yield a lot of facts; the default ceiling
-        # truncates the JSON mid-object
+        # a dense window yields many facts and the default ceiling truncates them
         "max_output_tokens": 8192,
     }
 
     def complete_json(self, prompt: str, prompt_version: str,
                       max_attempts: int = 4) -> dict:
-        # a cached answer under any model this client knows about is still an
-        # answer, so rotation never re-asks a question already paid for
+        # a cached answer under any rotated model is still an answer
         for model in self.models:
             hit = cache.get(self.conn,
                             cache.cache_key(model, prompt_version, prompt))

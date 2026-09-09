@@ -3,6 +3,7 @@ import json
 import os
 import sqlite3
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, UploadFile
@@ -13,10 +14,26 @@ from fastapi.templating import Jinja2Templates
 from .config import key_list, model_list, settings
 from .db import connect, init_schema, seed_from_shipped_cache
 from .llm.client import LLMClient, NoAPIKey
-from .pipeline import build_relations, ingest
+from .pipeline import build_relations, canonicalise_corpus, ingest
 
 HERE = Path(__file__).parent
-app = FastAPI(title="Fact Knowledge Layer")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """On a hosted instance, build the layer from the cache at boot."""
+    if os.getenv("FACTLAYER_AUTOLOAD", "").lower() in ("1", "true", "yes"):
+        conn = get_conn()
+        if not conn.execute("SELECT 1 FROM documents LIMIT 1").fetchone():
+            job_id = uuid.uuid4().hex
+            conn.execute("INSERT INTO jobs(id, stage, done, total) "
+                         "VALUES (?,?,?,?)", (job_id, "queued", 0, 0))
+            conn.commit()
+            _load_starter(os.getenv("FACTLAYER_DB", str(settings.db_path)), job_id)
+    yield
+
+
+app = FastAPI(title="Fact Knowledge Layer", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(HERE / "templates"))
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
@@ -236,6 +253,53 @@ async def upload_form(background: BackgroundTasks, file: UploadFile):
     return RedirectResponse(url="/", status_code=303)
 
 
+STARTER_DIR = HERE.parents[1] / "starter-datasets"
+
+
+def _load_starter(db_path: str, job_id: str) -> None:
+    """Read the bundled documents, replaying the committed responses."""
+    conn = _conn_for(db_path)
+    pdfs = sorted(STARTER_DIR.rglob("*.pdf"), key=lambda p: str(p).lower())
+    # cache-only: reaching for the network here would stall on a spent quota
+    client = LLMClient(conn, None, settings.model, models=model_list())
+    try:
+        for n, pdf in enumerate(pdfs, start=1):
+            conn.execute("UPDATE jobs SET stage=?, done=?, total=? WHERE id=?",
+                         (f"reading {pdf.name}", n - 1, len(pdfs), job_id))
+            conn.commit()
+            ingest(conn, client, pdf, canonicalise_terms=False)
+        conn.execute("UPDATE jobs SET stage='relating' WHERE id=?", (job_id,))
+        conn.commit()
+        try:
+            canonicalise_corpus(conn, client)
+        except Exception:                              # noqa: BLE001
+            pass
+        build_relations(conn, client, max_model_calls=0)
+        facts = conn.execute("SELECT COUNT(*) FROM facts").fetchone()[0]
+        conn.execute("UPDATE jobs SET stage='done', done=?, total=?, facts=? "
+                     "WHERE id=?", (len(pdfs), len(pdfs), facts, job_id))
+        conn.commit()
+    except Exception as exc:                           # noqa: BLE001
+        conn.execute("UPDATE jobs SET stage='failed', error=? WHERE id=?",
+                     (f"{type(exc).__name__}: {exc}", job_id))
+        conn.commit()
+
+
+@app.post("/load-starter")
+def load_starter(background: BackgroundTasks):
+    """Build the knowledge layer from the bundled documents."""
+    conn = get_conn()
+    if conn.execute("SELECT 1 FROM documents LIMIT 1").fetchone():
+        return RedirectResponse(url="/", status_code=303)
+    job_id = uuid.uuid4().hex
+    conn.execute("INSERT INTO jobs(id, stage, done, total) VALUES (?,?,?,?)",
+                 (job_id, "queued", 0, 0))
+    conn.commit()
+    db_path = os.getenv("FACTLAYER_DB", str(settings.db_path))
+    background.add_task(_load_starter, db_path, job_id)
+    return RedirectResponse(url="/", status_code=303)
+
+
 @app.get("/facts", response_class=HTMLResponse)
 def page_facts(request: Request, q: str | None = None, doc: int | None = None):
     return templates.TemplateResponse(
@@ -264,8 +328,7 @@ def page_gaps(request: Request):
     rows = _rows(conn.execute(
         "SELECT g.page_no, g.reason, d.filename, d.id AS doc_id "
         "FROM gaps g JOIN documents d ON d.id=g.doc_id ORDER BY d.id, g.page_no"))
-    # A fact whose quote did not hold up and a window nobody read are different
-    # things; counting them together overstates the failure rate.
+    # rejected facts and unread windows differ, so count them separately
     rejected = _rows(conn.execute(
         "SELECT r.payload, r.reason, d.filename FROM rejected_facts r "
         "JOIN documents d ON d.id=r.doc_id WHERE r.reason LIKE '%not found%' "

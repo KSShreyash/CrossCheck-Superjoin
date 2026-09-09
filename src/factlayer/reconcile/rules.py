@@ -3,11 +3,6 @@ from ..normalize.units import units_compatible, values_agree
 
 
 # Qualifiers describe the measurement; provenance describes who reported it.
-# Only the former affects whether two facts are comparable. Two institutions
-# publishing different numbers for the same measure over the same period is a
-# contradiction - it is the most interesting kind - so provenance must never
-# be read as a reason they are measuring different things. These are generic
-# roles rather than anything specific to these documents.
 PROVENANCE_KEYS = {"source", "publisher", "attribution", "reported_by",
                    "reporter", "author", "institution"}
 
@@ -18,28 +13,18 @@ def measurement_diff(diff: dict[str, tuple]) -> dict[str, tuple]:
 
 
 def qualifier_diff(a: Fact, b: Fact) -> dict[str, tuple]:
-    """Which recorded qualifiers differ between two facts.
-
-    No qualifier key is hard-coded: any key present on either side with a
-    different value counts, so new kinds of distinction introduced by an
-    unfamiliar document are picked up without changing this code.
-    """
+    """Which recorded qualifiers differ between two facts."""
     diff: dict[str, tuple] = {}
     for key in set(a.qualifiers) | set(b.qualifiers):
         left, right = a.qualifiers.get(key), b.qualifiers.get(key)
         if left == right:
             continue
-        # A qualifier recorded on one side and absent on the other is unknown,
-        # not contradicted. One document writing "real GDP" as a basis while
-        # another simply does not say is a gap in extraction, and treating it
-        # as a difference downgrades a genuine disagreement into something
-        # apparently explained. Same rule as periods and units throughout.
+        # a qualifier present on one side only is unknown, not contradicted
         if left is None or right is None:
             continue
         diff[key] = (left, right)
     if a.entity_id and b.entity_id and a.entity_id != b.entity_id:
-        # a real difference in what is being measured, so it belongs in the
-        # comparison rather than being used to drop the pair silently
+        # a real difference in what is measured, so record it rather than drop it
         diff["subject"] = (a.entity_id, b.entity_id)
     if (a.period_start, a.period_end) != (b.period_start, b.period_end):
         diff["period"] = ((a.period_start, a.period_end),
@@ -63,25 +48,17 @@ def rule_verdict(a: Fact, b: Fact, tol: float) -> tuple[str, dict]:
                     a.value_raw, b.value_raw):
         return ("corroborates" if not diff else "corroborates_with_caveat"), diff
 
-    # Values differ. Calling that a contradiction asserts the two facts are
-    # comparable, and that cannot be asserted without knowing both periods.
-    # An absent period is unknown, NOT "the same period as the other one":
-    # treating None == None as a match manufactured 1,480 false contradictions
-    # across two starter documents, 45% of all pairs.
+    # values differ, and calling that a contradiction needs both periods
     if a.period_start is None or b.period_start is None:
         return "insufficient_context", diff
 
     material = measurement_diff(diff)
     if list(material) == ["period"]:
-        # Two different years reporting different numbers is what reporting
-        # looks like, not a disagreement. Deciding it here also keeps the
-        # model from being asked a question it can get wrong: given FY23
-        # against FY24 it will happily assert they cover the same period.
+        # different years reporting different numbers is reporting, not conflict
         return "different_period", diff
     if len(material) == 1:
         return "reconcilable", diff
     if not material:
-        # nothing about the measurement distinguishes them; a differing
-        # publisher is exactly what makes this worth surfacing
+        # nothing about the measurement distinguishes them, so surface it
         return "contradiction_candidate", diff
     return "needs_model", diff

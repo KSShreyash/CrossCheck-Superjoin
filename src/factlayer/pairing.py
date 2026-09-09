@@ -13,12 +13,7 @@ def _tokens(fact: Fact) -> frozenset[str]:
 
 
 def candidate_pairs(facts: list[Fact], max_per_fact: int) -> list[tuple[int, int]]:
-    """Facts worth comparing, from the union of two recall channels.
-
-    Comparing every pair is quadratic and mostly wasted, so pairs come from
-    sharing a canonical metric or from overlapping metric wording. Union
-    rather than intersection: each channel catches pairs the other misses.
-    """
+    """Facts worth comparing, from the union of two recall channels."""
     by_metric: dict[str, list[int]] = defaultdict(list)
     for i, f in enumerate(facts):
         if f.metric_id:
@@ -31,20 +26,11 @@ def candidate_pairs(facts: list[Fact], max_per_fact: int) -> list[tuple[int, int
             return
         a, b = (i, j) if i < j else (j, i)
         # Differing subjects block a pair only when the metric differs too.
-        # Canonicalisation names the thing measured, so one document says
-        # "India's GDP" where another says "real GDP" and a strict identity
-        # test drops the comparison before anything can look at it. When the
-        # metric already matches, the subject difference is recorded and
-        # judged rather than used to silently discard the pair.
         if facts[a].entity_id and facts[b].entity_id and \
            facts[a].entity_id != facts[b].entity_id and \
            facts[a].metric_id != facts[b].metric_id:
             return
-        # Incomparable units are noise, not disagreement: without this gate a
-        # rupee figure pairs with a percentage purely on shared metric words.
-        # It must go through units_compatible rather than a plain inequality,
-        # or UNKNOWN - a magnitude whose dimension was never recorded - reads
-        # as a different unit and blocks the comparison entirely.
+        # incomparable units are noise, but UNKNOWN must still be allowed to pair
         if not units_compatible(facts[a].canon_unit, facts[b].canon_unit):
             return
         scored[(a, b)] = max(scored.get((a, b), 0.0), score)

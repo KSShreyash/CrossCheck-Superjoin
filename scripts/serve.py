@@ -1,11 +1,5 @@
 """Run the web interface without installing the package first.
 
-`uvicorn factlayer.api:app` needs `factlayer` to be importable, which means
-`pip install -e .` must have succeeded. The other scripts do not need that -
-they add `src/` to the path themselves - so it is possible to ingest, inspect
-the cases and audit the grounding, then fail at the last step. This script
-closes that gap: it works from a bare checkout.
-
     python scripts/serve.py
     python scripts/serve.py --port 8080
 """

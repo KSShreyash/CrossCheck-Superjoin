@@ -30,12 +30,7 @@ def _emit(doc_id: int, index: int, ids: list[int], parts: list[str]) -> Window:
 
 
 def split_window(window: Window) -> list[Window]:
-    """Halve a window at a block boundary, preserving block identity.
-
-    Used when a window produces more facts than the model's output limit can
-    hold. The densest windows are the likeliest to truncate and the most worth
-    keeping, so they are retried in halves rather than discarded.
-    """
+    """Halve a window at a block boundary, preserving block identity."""
     if len(window.block_ids) < 2:
         return []
     mid = len(window.block_ids) // 2

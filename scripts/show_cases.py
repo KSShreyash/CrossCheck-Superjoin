@@ -1,8 +1,5 @@
 """Find and print the four cases the assignment asks to see.
 
-Reads whatever has been ingested and pulls out the strongest example of each,
-with both evidence quotes and the system's reasoning.
-
     python scripts/show_cases.py
 """
 import argparse
@@ -12,8 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-# Windows defaults stdout to cp1252, which cannot encode the rupee sign these
-# documents are full of. Redirecting output to a file would otherwise crash.
+# Windows stdout defaults to cp1252, which cannot encode the rupee sign
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -123,8 +119,7 @@ def main() -> int:
             "SELECT d.filename, g.page_no, g.reason FROM gaps g "
             "JOIN documents d ON d.id = g.doc_id ORDER BY d.id, g.page_no"):
         print(f"    unreadable  {g['filename']} page {g['page_no']}: {g['reason']}")
-    # These are different things and must not be added together: one is a
-    # quality signal about extraction, the other is simply text nobody read.
+    # ungrounded facts and unread windows differ, so report them separately
     ungrounded = conn.execute(
         "SELECT COUNT(*) FROM rejected_facts WHERE reason LIKE '%not found%'"
     ).fetchone()[0]

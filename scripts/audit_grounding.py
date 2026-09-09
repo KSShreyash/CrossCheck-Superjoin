@@ -1,9 +1,5 @@
 """Check the central claim: every stored fact quotes text that is really there.
 
-Re-reads each piece of evidence and looks for it in the text of the page it
-says it came from, going back to the stored blocks rather than trusting the
-recorded offsets. Independent of the extraction path that produced them.
-
     python scripts/audit_grounding.py
 """
 import argparse
@@ -14,8 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-# Windows defaults stdout to cp1252, which cannot encode the rupee sign these
-# documents are full of. Redirecting output to a file would otherwise crash.
+# Windows stdout defaults to cp1252, which cannot encode the rupee sign
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
@@ -69,11 +64,7 @@ def main() -> int:
         if quote in page_text(r["doc_id"], r["page_no"]):
             continue
 
-        # Not a contiguous run on the printed page. Two innocent reasons for
-        # that, so check what the evidence actually claims: the blocks it
-        # names. Running headers are filtered before extraction, so a quote
-        # crossing one joins text either side of it, and a quote can also run
-        # from the foot of one page onto the next.
+        # Not contiguous on the page, so check the blocks the evidence names
         block_ids = json.loads(r["block_ids"] or "[]")
         if block_ids:
             placeholders = ",".join("?" for _ in block_ids)
@@ -99,9 +90,7 @@ def main() -> int:
         print(f"\n  fact {r['id']} claims {r['filename']} page {r['page_no']}")
         print(f"    quote: {norm(r['quote'])[:110]}")
 
-    # Two different things live in rejected_facts and adding them together
-    # overstates the failure rate: one is a fact whose quote did not hold up,
-    # the other is a window nobody read.
+    # Ungrounded facts and unread windows differ; adding them overstates errors
     ungrounded = conn.execute(
         "SELECT COUNT(*) FROM rejected_facts WHERE reason LIKE '%not found%'"
     ).fetchone()[0]

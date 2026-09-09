@@ -7,13 +7,7 @@ _QUALIFIER_KINDS = {"basis", "vintage", "period", "scope", "segment"}
 
 def verify(a: Fact, b: Fact, claimed: dict | None,
            tol: float) -> tuple[bool, str]:
-    """Re-derive a transformation the model claimed, independently.
-
-    The model is allowed to propose why two facts reconcile; it is not taken
-    at its word. A scale claim has to survive the arithmetic, and a claim that
-    some qualifier explains the gap has to survive checking that the qualifier
-    genuinely differs.
-    """
+    """Re-derive a transformation the model claimed, independently."""
     if not claimed or "kind" not in claimed:
         return False, "no transform claimed; nothing to verify"
     kind = claimed["kind"]

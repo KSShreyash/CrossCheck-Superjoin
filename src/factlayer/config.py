@@ -12,12 +12,10 @@ ROOT = Path(__file__).resolve().parents[2]
 class Settings:
     # FACTLAYER_DB lets tests and deployments point at a different file
     db_path: Path = Path(os.getenv("FACTLAYER_DB", ROOT / "factlayer.sqlite"))
-    upload_dir: Path = ROOT / "uploads"
+    upload_dir: Path = Path(os.getenv("FACTLAYER_UPLOADS", ROOT / "uploads"))
     gemini_api_key: str | None = os.getenv("GEMINI_API_KEY")
     model: str = os.getenv("FACTLAYER_MODEL", "gemini-3.6-flash")
-    # The free tier counts requests per day per project per model, so listing
-    # several models multiplies the daily allowance without multiplying keys.
-    # Order is fixed because the model name is part of every cache key.
+    # quota is counted per model, so several models stretch one key further
     model_rotation: str = os.getenv(
         "FACTLAYER_MODELS",
         "gemini-3.6-flash,gemini-3.7-flash,gemini-3.5-flash,gemini-3.1-flash-lite")
@@ -28,8 +26,7 @@ class Settings:
     window_overlap: int = 1200
     boilerplate_min_pages: int = 4       # repeats on >= N pages -> boilerplate
     gap_min_chars: int = 120             # below this on a full page -> gap
-    # 12 produced 3,291 pairs from 553 facts on two starter documents with no
-    # gain in the cases that matter; 6 halves the adjudication budget
+    # 12 gave 3,291 pairs from 553 facts with no gain; 6 halves the budget
     max_pairs_per_fact: int = 6
 
 

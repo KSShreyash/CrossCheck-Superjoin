@@ -21,8 +21,7 @@ from .reconcile.verify import verify
 from .store import (save_blocks, save_document, save_fact, save_gaps,
                     save_rejected)
 
-# rule verdicts that never reach the model still need a final verdict, or the
-# API filters on a NULL column and most of the knowledge layer goes invisible
+# pairs settled by rule still need a final verdict or the API filter hides them
 RULE_FINAL = {
     "corroborates": "corroborates",
     "corroborates_with_caveat": "corroborates",
@@ -45,12 +44,7 @@ def _bump_job(conn, job_id, *, stage="extracting", done=0, total=None, facts=0):
 
 
 def _already_ingested(conn, doc_id: int) -> bool:
-    """Whether extraction finished for this document.
-
-    Deliberately not "does it have blocks": blocks are written before the
-    model is called, so an ingest cut short by a spent quota leaves a document
-    that looks ingested and would never be retried.
-    """
+    """Whether extraction finished for this document."""
     row = conn.execute("SELECT ingest_complete FROM documents WHERE id=?",
                        (doc_id,)).fetchone()
     return bool(row and row["ingest_complete"])
@@ -59,13 +53,7 @@ def _already_ingested(conn, doc_id: int) -> bool:
 def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
            job_id: str | None = None, canonicalise_terms: bool = True,
            max_windows: int | None = None) -> int:
-    """Ingest one PDF and return its document id. Re-ingesting is a no-op.
-
-    `max_windows` reads only the densest N windows. The free tier allows 20
-    requests per day per model, so a 100-page document cannot be read
-    exhaustively; the density ordering means a budget spends itself on the
-    passages carrying figures rather than on narrative prose.
-    """
+    """Ingest one PDF and return its document id. Re-ingesting is a no-op."""
     pdf_path = Path(pdf_path)
     blocks, pages = extract_blocks(pdf_path)
     mark_boilerplate(blocks, settings.boilerplate_min_pages)
@@ -78,10 +66,7 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
         _bump_job(conn, job_id, stage="already ingested", done=1, total=1)
         return doc_id
 
-    # Clear everything the previous attempt left behind. Blocks are recreated
-    # with new row ids, so facts and evidence from an earlier run would point
-    # at rows that no longer exist - and would also survive alongside the new
-    # facts, duplicating every relation they take part in.
+    # Clear everything the previous attempt left behind.
     conn.execute(
         "DELETE FROM relations WHERE fact_a IN "
         "(SELECT id FROM facts WHERE doc_id=?) OR fact_b IN "
@@ -110,13 +95,7 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
     skipped: list[int] = []
 
     def pull(window, allow_split=True):
-        """Extract from one window, halving it once if the output truncated.
-
-        Each fact is registered against the window it was actually read from,
-        because its span is relative to that window's text. Attributing a
-        fact from a half to the parent would resolve its evidence to the
-        wrong blocks.
-        """
+        """Extract from one window, halving it once if the output truncated."""
         try:
             got, bad = extract_facts(client, window, doc_id)
             for f in got:
@@ -124,11 +103,6 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
             return got, bad
         except NoAPIKey:
             # This window was never cached and there is no key to read it with.
-            # Skip it rather than abandoning the document: the windows behind
-            # it may well be cached, which is exactly the case when replaying a
-            # committed cache with a larger budget than it was built with. The
-            # document is left marked incomplete so a later run with a key
-            # picks it up.
             skipped.append(window.index)
             return [], [{"payload": {"window_index": window.index},
                          "reason": "no cached response and no API key"}]
@@ -137,8 +111,7 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
             if not halves:
                 return [], [{"payload": {"window_index": window.index},
                              "reason": f"unusable model output: {exc}"}]
-            # a dense window can produce more facts than the output limit
-            # holds; those are the windows most worth recovering
+            # a dense window can overflow the output limit, so retry it in halves
             got, bad = [], []
             for half in halves:
                 g, b = pull(half, allow_split=False)
@@ -184,13 +157,7 @@ def ingest(conn: sqlite3.Connection, client, pdf_path: str | Path,
 
 
 def canonicalise_corpus(conn: sqlite3.Connection, client) -> int:
-    """Canonicalise every stored subject and metric in one pass.
-
-    Ingesting document by document costs two calls per document. Doing it once
-    over everything costs two calls total, which matters when the free tier
-    allows twenty per day, and it is also the better answer: the model sees
-    every name at once instead of meeting them a document at a time.
-    """
+    """Canonicalise every stored subject and metric in one pass."""
     rows = conn.execute("SELECT DISTINCT subject, metric FROM facts").fetchall()
     if not rows:
         return 0
@@ -239,13 +206,7 @@ def _fetch_quote(conn, fact_id: int) -> str:
 
 
 def _rules_only_verdict(rule_verdict: str) -> tuple[str, str | None, str]:
-    """What to record when no adjudication is available.
-
-    A contradiction candidate is not an absence of evidence: metric, period
-    and unit all match and the values do not, which is a disagreement whether
-    or not a model has blessed it. Filing that as "insufficient context" would
-    hide a real finding behind a missing API call.
-    """
+    """What to record when no adjudication is available."""
     if rule_verdict == "contradiction_candidate":
         return ("contradicts", "genuine_disagreement",
                 "Same metric, period and unit; the values differ and no recorded "
@@ -279,20 +240,14 @@ def build_relations(conn: sqlite3.Connection, client,
 
     pairs = candidate_pairs(facts, settings.max_pairs_per_fact)
 
-    # A budget spent first-come-first-served goes on whatever happens to sort
-    # early, which is mostly one document arguing with itself. Judge the most
-    # informative pairs first: a disagreement between two documents is worth
-    # far more than a duplicated row inside one.
+    # spend a limited budget on the most informative pairs, not the first ones
     def priority(pair: tuple[int, int]) -> tuple:
         a, b = facts[pair[0]], facts[pair[1]]
         verdict, _ = rule_verdict(a, b, settings.value_tolerance)
         rank = {"contradiction_candidate": 0, "reconcilable": 1,
                 "needs_model": 2}.get(verdict, 9)
         cross = 0 if a.doc_id != b.doc_id else 1
-        # Crossing documents outranks the kind of disagreement. One document
-        # arguing with itself is usually a period the extraction missed, and
-        # there are many of those; two documents disagreeing is the thing this
-        # system exists to surface, and there are few.
+        # Crossing documents outranks the kind of disagreement.
         return (cross, rank, -(a.confidence + b.confidence))
 
     pairs = sorted(pairs, key=priority)
@@ -316,14 +271,7 @@ def build_relations(conn: sqlite3.Connection, client,
                                "values are not in conflict.")
         elif exhausted or (max_model_calls is not None
                            and calls >= max_model_calls):
-            # No adjudication available, whether the budget was spent or never
-            # offered. Report what the rules can support rather than nothing.
-            #
-            # A contradiction candidate is not an absence of evidence: metric,
-            # period and unit all match and the values do not, which is a
-            # disagreement whether or not a model has blessed it. Filing that
-            # as "insufficient context" would hide a real finding behind a
-            # missing API call. It is recorded as unreviewed, not as agreed.
+            # no adjudication available, whether the budget was spent or never offered
             final, reason_code, explanation = _rules_only_verdict(rv)
         else:
             calls += 1
@@ -331,11 +279,7 @@ def build_relations(conn: sqlite3.Connection, client,
                 out = adjudicate(client, a, b, rv, diff,
                                  meta[ids[i]], meta[ids[j]])
             except Exception as exc:               # noqa: BLE001
-                # Running out mid-pass must not discard the pairs already
-                # classified, nor the many that rules alone can settle. The
-                # pair that happened to trigger the failure gets the same
-                # rules-only treatment as every pair after it, or it would be
-                # filed as undecided purely for being first.
+                # running out mid-pass must not discard the pairs already classified
                 exhausted = True
                 final, reason_code, explanation = _rules_only_verdict(rv)
                 explanation = f"{explanation} ({type(exc).__name__})"
@@ -364,10 +308,7 @@ def build_relations(conn: sqlite3.Connection, client,
                     "corroborates", "corroborates_with_caveat"):
                 final, agreed = "needs_review", 0
 
-            # A contradiction asserts the two facts are comparable. If any
-            # qualifier differs, something distinguishes them, so the claim is
-            # held rather than taken - otherwise the model can turn a change of
-            # basis or scope into a fabricated disagreement.
+            # a contradiction asserts comparability, so hold it when a qualifier differs
             material = measurement_diff(diff)
             if model_verdict == "contradicts" and material:
                 final, agreed = "needs_review", 0

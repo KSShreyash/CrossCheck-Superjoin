@@ -6,7 +6,8 @@ from fastapi.testclient import TestClient
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("FACTLAYER_DB", str(tmp_path / "api.sqlite"))
     from factlayer.api import app
-    return TestClient(app)
+    with TestClient(app) as c:
+        yield c
 
 
 def test_stats_and_empty_listings(client):
@@ -67,3 +68,21 @@ def test_relation_page_renders_a_real_relation(client, tmp_path, monkeypatch):
 
     listing = client.get("/api/relations?type=corroborates").json()
     assert len(listing) == 1 and listing[0]["a_doc"] == "ar24.pdf"
+
+
+def test_load_starter_button_builds_the_layer_without_a_key(client):
+    # the button must work from the committed cache alone: reaching for the
+    # network here would stall the page whenever a quota is spent
+    page = client.get("/").text
+    assert 'action="/load-starter"' in page
+
+    assert client.post("/load-starter", follow_redirects=False).status_code == 303
+    stats = client.get("/api/stats").json()
+    assert stats["documents"] == 6
+    assert stats["facts"] > 0 and stats["relations"] > 0
+    assert stats["grounded_facts"] == stats["facts"]
+
+    after = client.get("/").text
+    assert 'action="/load-starter"' not in after, "hidden once documents exist"
+    assert client.post("/load-starter", follow_redirects=False).status_code == 303
+    assert client.get("/api/stats").json()["documents"] == 6, "second press no-ops"

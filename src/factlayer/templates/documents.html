@@ -7,27 +7,29 @@
 <div class="note empty">
   <b>Nothing has been ingested yet.</b>
   <p>
-    This is a fresh checkout. The model responses for the starter dataset are already
-    committed under <code>cache/</code>, so building the knowledge layer needs no API key
-    and takes a few seconds — but the facts and relations are computed by the pipeline
-    rather than shipped, so it has to run once:
+    Six sample documents are bundled with this project, and the model responses for them
+    are already committed, so building the knowledge layer needs no API key and takes a
+    few seconds. The facts and relations are computed by the pipeline rather than shipped,
+    so it has to run once.
   </p>
-  <pre>python scripts/ingest_starter.py</pre>
+  <form method="post" action="/load-starter" class="inline">
+    <button type="submit">Load the sample documents</button>
+  </form>
   <p>
-    The starter documents are bundled with the repository, so that command needs no
-    arguments. Then reload this page. Pass a path to read any other folder of PDFs,
-    though a document the cache has never seen needs a <code>GEMINI_API_KEY</code> in
-    <code>.env</code>. You can also upload a single PDF using the form below.
+    Equivalent on the command line: <code>python scripts/ingest_starter.py</code>, which
+    also accepts a path to any other folder of PDFs. You can upload a single PDF using
+    the form below, though a document the cache has never seen needs a
+    <code>GEMINI_API_KEY</code>.
   </p>
 </div>
 {% endif %}
 
 {% if documents %}
 <p class="note">
-  The documents below are the <b>starter dataset supplied with the assignment</b>, plus
-  anything you have uploaded. Nothing about them is hard-coded: the cached model
-  responses ship so the results can be reviewed without an API key, but every fact and
-  relation here is recomputed by the pipeline on each run.
+  These are the <b>six bundled sample documents</b>, plus anything you have uploaded.
+  Nothing about them is hard-coded: the cached model responses ship so the results can be
+  reviewed without an API key, but every fact and relation here is recomputed by the
+  pipeline on each run.
   {%- if stats.has_api_key %}
   Upload any PDF to run it through the same path.
   {%- else %}

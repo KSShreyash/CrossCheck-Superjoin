@@ -47,6 +47,28 @@ python scripts/ingest_starter.py /some/other/folder
 
 Run the test suite with `pytest`. It needs no network access and no key.
 
+### Hosting it
+
+The app is a single process with a SQLite file, so any host that runs a container works.
+Railway needs no configuration beyond the repository:
+
+1. Create a project from this repository. `railway.json` supplies the start command and
+   Nixpacks detects Python from `pyproject.toml`.
+2. Set `FACTLAYER_AUTOLOAD=1`. The knowledge layer is then built from the committed
+   cache when the process boots, so the first visitor sees a populated interface rather
+   than an empty one.
+3. Optionally set `GEMINI_API_KEY` so visitors can upload their own PDFs. Without it the
+   bundled documents still work, and an upload it has not seen reports the pages it
+   could not read.
+
+Two environment variables matter on a host with an ephemeral disk: `FACTLAYER_DB` and
+`FACTLAYER_UPLOADS`, which move the database and uploads to a writable volume. Both
+default to the project directory, which is fine locally and on Railway.
+
+Vercel is a poor fit and I did not target it: its Python functions run on a read-only
+filesystem, so SQLite cannot write, and each invocation would rebuild the layer from
+scratch.
+
 ### A note on the free tier
 
 The Gemini free tier allows 20 requests per day per model, not per minute. Reading all
