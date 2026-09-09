@@ -87,6 +87,20 @@ Railway's disk is ephemeral, so a deploy resets the instance to its empty state 
 uploaded PDFs do not survive a restart unless `FACTLAYER_UPLOADS` points at a volume.
 Rebuilding costs one button press.
 
+Render works the same way and `render.yaml` configures it: create a Blueprint from the
+repository, or a Web Service with `pip install -r requirements.txt` to build and
+`python scripts/serve.py --host 0.0.0.0` to start. It sets `FACTLAYER_AUTOLOAD=1`,
+because a free Render instance loses its disk when it sleeps and would otherwise wake up
+empty; boot then takes about five seconds instead of three.
+
+A free instance also sleeps after fifteen minutes of no traffic and takes most of a
+minute to wake. `.github/workflows/keep-alive.yml` pings `/api/stats` every ten minutes
+to avoid that, once a repository variable named `DEPLOY_URL` holds the deployed address.
+It is deliberately harmless without one: the job reports that nothing is configured and
+passes. Two things to know if you rely on it. GitHub runs scheduled workflows on a
+best-effort basis and can delay them past the sleep window, and it disables schedules
+altogether after sixty days without repository activity.
+
 Vercel is a poor fit and I did not target it: its Python functions run on a read-only
 filesystem, so SQLite cannot write, and each invocation would rebuild the layer.
 

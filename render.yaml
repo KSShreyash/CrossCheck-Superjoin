@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: crosscheck
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scripts/serve.py --host 0.0.0.0
+    healthCheckPath: /api/stats
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      # a free instance loses its disk when it spins down, so rebuild the
+      # layer from the committed cache at boot rather than showing an empty page
+      - key: FACTLAYER_AUTOLOAD
+        value: "1"
+      # set this in the dashboard to let visitors upload their own PDFs
+      - key: GEMINI_API_KEY
+        sync: false
