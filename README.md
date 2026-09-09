@@ -85,8 +85,7 @@ before saying anything about whether they agree:
 So most of the weight sits in the fact representation and the normalisers. Every fact
 carries its own qualifiers: metric, subject, period, unit and scale, reporting basis,
 data vintage. Agreement then largely falls out of comparing them. Without that, the
-alternative is per-document rules, which the brief rules out and which would not survive
-an unfamiliar PDF.
+alternative is per-document rules, which would not survive an unfamiliar PDF.
 
 ### The model proposes, the rules verify
 
@@ -201,8 +200,8 @@ Amount".
 ### Engineering decisions and trade-offs
 
 * **SQLite rather than a graph database.** Relations are one table with two foreign keys
-  and the queries are joins. The brief is explicit that a graph store is not itself the
-  answer, and one file means nothing to provision.
+  and the queries are joins. A graph store would not answer the hard question here, which
+  is whether two facts are comparable at all, and one file means nothing to provision.
 * **A fixed core plus an open qualifier map.** A prospectus, an earnings deck and an IMF
   staff report do not share a fact schema. Inventing one upfront gives either something
   so loose it says nothing, or something that breaks on the first unfamiliar document.
@@ -270,9 +269,9 @@ Next steps, in the order I would take them:
 **What ships, and what is computed.** The repository contains the six starter PDFs and
 100 cached model responses. It contains no facts, relations or verdicts: those are
 computed by the pipeline on every run, so what a reader sees is produced by the code
-rather than copied from a prepared database. The cache exists because the brief asks for
-enough sample output to evaluate the work without an account, and because the free tier
-cannot read this corpus in a day.
+rather than copied from a prepared database. The cache exists so the work can be
+evaluated without an API key of your own, and because the free tier cannot read this
+corpus in a day.
 
 **Nothing is hard-coded to these documents.** `tests/test_no_hardcoding.py` enforces that
 rather than asserting it. It reads the source and fails if any string literal in a code
