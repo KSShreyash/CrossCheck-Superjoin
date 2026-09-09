@@ -288,9 +288,9 @@ def _load_starter(db_path: str, job_id: str) -> None:
 @app.post("/load-starter")
 def load_starter(background: BackgroundTasks):
     """Build the knowledge layer from the bundled documents."""
+    # safe to press again: ingest skips documents already read, and relations
+    # are written on a unique pair so a rebuild refreshes rather than doubles
     conn = get_conn()
-    if conn.execute("SELECT 1 FROM documents LIMIT 1").fetchone():
-        return RedirectResponse(url="/", status_code=303)
     job_id = uuid.uuid4().hex
     conn.execute("INSERT INTO jobs(id, stage, done, total) VALUES (?,?,?,?)",
                  (job_id, "queued", 0, 0))

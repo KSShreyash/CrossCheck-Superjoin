@@ -12,16 +12,23 @@ Requires Python 3.11 or newer.
 git clone https://github.com/KSShreyash/CrossCheck-Superjoin.git
 cd CrossCheck-Superjoin
 pip install -e ".[dev]"
-
-python scripts/ingest_starter.py     # builds the knowledge layer, about 3 seconds
-python scripts/serve.py              # then open http://127.0.0.1:8000
+python scripts/serve.py
 ```
 
-No API key is required. The six starter documents are bundled under `starter-datasets/`,
-and the model responses for them are committed under `cache/`, so the pipeline replays
-them offline. A key is only needed to read a PDF the cache has not seen.
+Open <http://127.0.0.1:8000>. It starts empty on purpose: nothing is pre-loaded, so
+press **Load the sample documents** and watch the knowledge layer get built. That takes
+about three seconds and needs no API key, because the six sample documents are bundled
+under `starter-datasets/` and the model responses for them are committed under `cache/`.
 
-Two more commands are worth running:
+The same thing on the command line, which also accepts a path to any other folder of
+PDFs:
+
+```bash
+python scripts/ingest_starter.py
+python scripts/ingest_starter.py /some/other/folder
+```
+
+Two more commands are worth running once there is data:
 
 ```bash
 python scripts/show_cases.py         # the four required cases, with their evidence
@@ -39,35 +46,49 @@ comes from https://aistudio.google.com/apikey):
 GEMINI_API_KEY=your_key_here
 ```
 
-Then upload a PDF through the web interface, or pass a folder to the ingest script:
-
-```bash
-python scripts/ingest_starter.py /some/other/folder
-```
+Then upload a PDF through the web interface. Without a key the bundled documents still
+work, and an upload it cannot read reports the pages it skipped rather than failing
+silently.
 
 Run the test suite with `pytest`. It needs no network access and no key.
 
 ### Hosting it
 
-The app is a single process with a SQLite file, so any host that runs a container works.
-Railway needs no configuration beyond the repository:
+The app is one process over a SQLite file, so any host that runs a container works.
+Railway needs no configuration beyond the repository.
 
-1. Create a project from this repository. `railway.json` supplies the start command and
-   Nixpacks detects Python from `pyproject.toml`.
-2. Set `FACTLAYER_AUTOLOAD=1`. The knowledge layer is then built from the committed
-   cache when the process boots, so the first visitor sees a populated interface rather
-   than an empty one.
-3. Optionally set `GEMINI_API_KEY` so visitors can upload their own PDFs. Without it the
-   bundled documents still work, and an upload it has not seen reports the pages it
-   could not read.
+1. On railway.app, create a project and deploy from this GitHub repository.
+2. Generate a domain under Settings, Networking.
 
-Two environment variables matter on a host with an ephemeral disk: `FACTLAYER_DB` and
-`FACTLAYER_UPLOADS`, which move the database and uploads to a writable volume. Both
-default to the project directory, which is fine locally and on Railway.
+That is all. The instance starts empty and a visitor presses **Load the sample
+documents** to build the layer from the committed cache, which takes about three seconds
+and makes no network calls. Set `FACTLAYER_AUTOLOAD=1` if you would rather it be
+populated at boot instead.
+
+`railway.json` supplies the start command and the health check, `requirements.txt` and
+`.python-version` tell Nixpacks what to install, and the app reads `PORT` from the
+environment.
+
+The start command is `python scripts/serve.py --host 0.0.0.0` rather than
+`uvicorn factlayer.api:app`, because the latter needs the package to have been installed
+and Nixpacks only installs the dependencies. `serve.py` puts `src/` on the path itself,
+so it works either way.
+
+Optional variables:
+
+| variable | effect |
+| --- | --- |
+| `GEMINI_API_KEY` | lets visitors upload PDFs the cache has not seen |
+| `FACTLAYER_AUTOLOAD=1` | build the layer at boot instead of on a button press |
+| `FACTLAYER_DB` | move the database to a mounted volume |
+| `FACTLAYER_UPLOADS` | move uploaded files to a mounted volume |
+
+Railway's disk is ephemeral, so a deploy resets the instance to its empty state and
+uploaded PDFs do not survive a restart unless `FACTLAYER_UPLOADS` points at a volume.
+Rebuilding costs one button press.
 
 Vercel is a poor fit and I did not target it: its Python functions run on a read-only
-filesystem, so SQLite cannot write, and each invocation would rebuild the layer from
-scratch.
+filesystem, so SQLite cannot write, and each invocation would rebuild the layer.
 
 ### A note on the free tier
 
@@ -186,10 +207,10 @@ rules raise it rather than explain it away. One figure is adjusted and the other
 a distinction neither document attached to the number itself. As reported, the two
 disagree.
 
-A second instance, across institutions, at `/relations/3`: the RBI Annual Report projects
-real GDP growth of 6.5 per cent for `2025-26` (p17) and the IMF Article IV projects 6.6
-per cent for `FY2025/26` (p13). Both period strings normalise to 2025-04-01. Without that
-step the two are never compared.
+A second instance, across institutions, under the `contradicts` filter on
+`/relations`: the RBI Annual Report projects real GDP growth of 6.5 per cent for
+`2025-26` (p17) and the IMF Article IV projects 6.6 per cent for `FY2025/26` (p13). Both
+period strings normalise to 2025-04-01. Without that step the two are never compared.
 
 **3. An apparent contradiction explained by context.**
 

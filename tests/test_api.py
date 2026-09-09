@@ -83,6 +83,10 @@ def test_load_starter_button_builds_the_layer_without_a_key(client):
     assert stats["grounded_facts"] == stats["facts"]
 
     after = client.get("/").text
-    assert 'action="/load-starter"' not in after, "hidden once documents exist"
+    assert 'action="/load-starter"' in after, "the button stays available"
+    assert "Rebuild the sample documents" in after
+
+    # pressing it again rebuilds rather than duplicating anything
+    before = client.get("/api/stats").json()
     assert client.post("/load-starter", follow_redirects=False).status_code == 303
-    assert client.get("/api/stats").json()["documents"] == 6, "second press no-ops"
+    assert client.get("/api/stats").json() == before, "a rebuild is idempotent"

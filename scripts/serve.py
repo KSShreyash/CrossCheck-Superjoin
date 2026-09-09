@@ -4,6 +4,7 @@
     python scripts/serve.py --port 8080
 """
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -16,8 +17,9 @@ if hasattr(sys.stdout, "reconfigure"):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=8000)
+    # PORT and HOST come from the environment on a hosted platform
+    ap.add_argument("--host", default=os.getenv("HOST", "127.0.0.1"))
+    ap.add_argument("--port", type=int, default=int(os.getenv("PORT", "8000")))
     ap.add_argument("--reload", action="store_true")
     args = ap.parse_args()
 

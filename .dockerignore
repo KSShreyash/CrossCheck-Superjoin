@@ -2,10 +2,9 @@
 .venv
 __pycache__
 *.pyc
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
-!cache/starter_cache.sqlite
+factlayer.sqlite
+factlayer.sqlite-wal
+factlayer.sqlite-shm
 uploads/
 .pytest_cache
 tests/

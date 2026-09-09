@@ -3,41 +3,19 @@
 {% block content %}
 <h1>Documents</h1>
 
-{% if not documents %}
-<div class="note empty">
-  <b>Nothing has been ingested yet.</b>
+<div class="note {% if not documents %}empty{% endif %}">
+  {% if not documents %}<b>Nothing has been ingested yet.</b>{% endif %}
   <p>
-    Six sample documents are bundled with this project, and the model responses for them
-    are already committed, so building the knowledge layer needs no API key and takes a
-    few seconds. The facts and relations are computed by the pipeline rather than shipped,
-    so it has to run once.
+    By clicking the button below you can see the results for the 6 sample documents
+    given. Nothing about them is hard-coded: the cached model responses ship so the
+    results can be reviewed without spending API key usage, as I am using a free Gemini
+    API key which is very limited in its number of requests, but every fact and relation
+    here was computed by the pipeline on the run that produced this page.
   </p>
   <form method="post" action="/load-starter" class="inline">
-    <button type="submit">Load the sample documents</button>
+    <button type="submit">{% if documents %}Rebuild{% else %}Load{% endif %} the sample documents</button>
   </form>
-  <p>
-    Equivalent on the command line: <code>python scripts/ingest_starter.py</code>, which
-    also accepts a path to any other folder of PDFs. You can upload a single PDF using
-    the form below, though a document the cache has never seen needs a
-    <code>GEMINI_API_KEY</code>.
-  </p>
 </div>
-{% endif %}
-
-{% if documents %}
-<p class="note">
-  These are the <b>six bundled sample documents</b>, plus anything you have uploaded.
-  Nothing about them is hard-coded: the cached model responses ship so the results can be
-  reviewed without an API key, but every fact and relation here is recomputed by the
-  pipeline on each run.
-  {%- if stats.has_api_key %}
-  Upload any PDF to run it through the same path.
-  {%- else %}
-  Upload any PDF to run it through the same path — though a document the cache has
-  never seen needs a <code>GEMINI_API_KEY</code>, since it genuinely has to be read.
-  {%- endif %}
-</p>
-{% endif %}
 
 <form class="upload" method="post" action="/upload" enctype="multipart/form-data">
   <input type="file" name="file" accept="application/pdf" required>
