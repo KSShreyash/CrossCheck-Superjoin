@@ -55,6 +55,8 @@ silently.
 Run the test suite with `pytest`. It needs no network access and no key.
 
 
+
+
 ## Video Demo
 
 https://drive.google.com/drive/folders/1Hq7L3n2OgYO-Q_YT-z-87yeXvPEElHGl?usp=sharing
@@ -78,6 +80,84 @@ So most of the weight sits in the fact representation and the normalisers. Every
 carries its own qualifiers: metric, subject, period, unit and scale, reporting basis,
 data vintage. Agreement then largely falls out of comparing them. Without that, the
 alternative is per-document rules, which would not survive an unfamiliar PDF.
+
+### Architecture
+
+One FastAPI process, one SQLite file, no other services. The model sits behind a cache,
+so the same corpus can be rebuilt offline.
+
+```mermaid
+flowchart LR
+    UI["Browser<br/>documents · facts<br/>relations · gaps"]
+
+    subgraph process["One FastAPI process"]
+        API["api.py<br/>routes and pages"]
+        PIPE["pipeline.py<br/>orchestration"]
+        CLIENT["llm/client.py<br/>cache, rotation, quota"]
+    end
+
+    subgraph stages["Pipeline modules"]
+        ING["ingest/<br/>pdf · boilerplate<br/>gaps · segment"]
+        EXT["extract.py<br/>grounding check"]
+        NORM["normalize/<br/>units · periods · canon"]
+        PAIR["pairing.py<br/>candidate pairs"]
+        REC["reconcile/<br/>rules · adjudicate · verify"]
+    end
+
+    DB[("SQLite<br/>facts, evidence, relations")]
+    CACHE[("cache/starter_cache.sqlite<br/>100 committed responses")]
+    GEM["Gemini Flash"]
+
+    UI <--> API
+    API --> PIPE
+    PIPE --> ING --> EXT --> NORM --> PAIR --> REC
+    EXT --> CLIENT
+    NORM --> CLIENT
+    REC --> CLIENT
+    CLIENT --> CACHE
+    CLIENT -.->|"only on a cache miss, with a key"| GEM
+    PIPE --> DB
+    API --> DB
+```
+
+### The pipeline
+
+Reading a document. Everything that cannot be used is recorded with a reason rather than
+dropped silently, which is what makes the gaps page meaningful.
+
+```mermaid
+flowchart TD
+    PDF["PDF"] --> BLOCKS["text blocks, each with a page<br/>and a bounding box"]
+    BLOCKS --> GAPS{"page almost<br/>empty?"}
+    GAPS -->|yes| GAPREC["recorded as a gap, with a reason"]
+    GAPS -->|no| BOIL{"same text on<br/>four or more pages?"}
+    BOIL -->|yes| DROPPED["dropped as a running header"]
+    BOIL -->|no| WIN["windows of about 12k characters,<br/>ordered by fact density"]
+    WIN --> ASK["the model proposes facts"]
+    ASK --> GROUND{"is the quote in the<br/>window, verbatim?"}
+    GROUND -->|no| REJ["rejected, with the reason kept"]
+    GROUND -->|yes| DEDUP["drop twins created by window overlap"]
+    DEDUP --> NORMV["normalise value, unit and period"]
+    NORMV --> CANON["canonicalise subject and metric,<br/>one pass over the whole corpus"]
+    CANON --> STORE[("facts and evidence,<br/>resolved back to page and box")]
+```
+
+Comparing facts. The rule layer decides everything it can; the model is asked only where
+arithmetic cannot settle it, and whatever it claims is re-derived.
+
+```mermaid
+flowchart TD
+    FACTS[("facts")] --> PAIRS["candidate pairs: a shared canonical<br/>metric, or overlapping wording"]
+    PAIRS --> RULES{"rule layer"}
+    RULES -->|"values agree"| COR["corroborates"]
+    RULES -->|"units known and different"| UNR["unrelated"]
+    RULES -->|"either period unknown"| INS["insufficient context"]
+    RULES -->|"only the period differs"| RBC["reconciled by context"]
+    RULES -->|"one qualifier differs,<br/>or nothing does"| MODEL["the model adjudicates and<br/>names the transform it claims"]
+    MODEL --> VERIFY{"re-derive that<br/>transform"}
+    VERIFY -->|"it holds"| MV["the model's verdict is kept"]
+    VERIFY -->|"it does not"| REVIEW["needs review,<br/>both readings recorded"]
+```
 
 ### The model proposes, the rules verify
 
